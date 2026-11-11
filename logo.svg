@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="YGO Sortierer">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#a9cbf5"/>
+      <stop offset="1" stop-color="#4f86d6"/>
+    </linearGradient>
+    <linearGradient id="art" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#cfe2fb"/>
+      <stop offset="1" stop-color="#9fc2f0"/>
+    </linearGradient>
+    <linearGradient id="star" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe18a"/>
+      <stop offset="1" stop-color="#f3b33d"/>
+    </linearGradient>
+  </defs>
+  <!-- App-Hintergrund -->
+  <rect width="128" height="128" rx="30" fill="url(#bg)"/>
+  <!-- hintere Karte (aufgefächert = sortiert) -->
+  <g transform="rotate(-14 64 66)">
+    <rect x="37" y="26" width="46" height="66" rx="6" fill="#e3eefc" stroke="#ffffff" stroke-width="2.5"/>
+  </g>
+  <!-- vordere Karte -->
+  <g transform="rotate(7 66 66)">
+    <rect x="44" y="30" width="46" height="66" rx="6" fill="#ffffff"/>
+    <rect x="48.5" y="35" width="37" height="6" rx="2" fill="#dbe8fb"/>
+    <circle cx="82" cy="38" r="2.6" fill="#4f86d6"/>
+    <rect x="49" y="45" width="36" height="31" rx="3" fill="url(#art)"/>
+    <path d="M67 50.5l3.2 6.6 7.2 1-5.2 5 1.3 7.2L67 66.9l-6.5 3.4 1.3-7.2-5.2-5 7.2-1z" fill="url(#star)" stroke="#ffffff" stroke-width="1.2" stroke-linejoin="round"/>
+    <rect x="49" y="80" width="36" height="3" rx="1.5" fill="#dbe8fb"/>
+    <rect x="49" y="86" width="24" height="3" rx="1.5" fill="#dbe8fb"/>
+  </g>
+  <!-- Sucher-Ecken (Kamera-Scan) -->
+  <g fill="none" stroke="#ffffff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18 38V24a6 6 0 0 1 6-6h14"/>
+    <path d="M90 18h14a6 6 0 0 1 6 6v14"/>
+    <path d="M110 90v14a6 6 0 0 1-6 6H90"/>
+    <path d="M38 110H24a6 6 0 0 1-6-6V90"/>
+  </g>
+</svg>

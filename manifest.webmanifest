@@ -1,0 +1,14 @@
+{
+  "name": "YGO Sortierer",
+  "short_name": "YGO Sortierer",
+  "description": "Yu-Gi-Oh!-Karten per Kamera scannen und sortieren",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#eef4fc",
+  "theme_color": "#4f86d6",
+  "lang": "de",
+  "icons": [
+    { "src": "logo.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

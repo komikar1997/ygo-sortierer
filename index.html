@@ -3,21 +3,36 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#14161c">
-<title>YGO Karten-Sortierer</title>
-<link rel="stylesheet" href="style.css?v=4">
+<meta name="theme-color" content="#4f86d6">
+<title>YGO Sortierer</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="logo.svg">
+<link rel="manifest" href="manifest.webmanifest">
+<script>
+  // Design (hell/dunkel) sofort setzen, bevor die Seite gezeichnet wird – verhindert Aufblitzen
+  (function () {
+    var t = 'auto';
+    try { t = (JSON.parse(localStorage.getItem('ygo.settings')) || {}).theme || 'auto'; } catch (e) {}
+    if (t === 'auto') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    document.documentElement.dataset.theme = t;
+  })();
+</script>
+<link rel="stylesheet" href="style.css?v=5">
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
 <header>
-  <div class="brand">🃏 <b>YGO Sortierer</b></div>
+  <div class="brand"><img src="logo.svg" alt=""> <span>YGO Sortierer</span></div>
   <nav>
     <button data-tab="scan" class="active"><span class="ico">📷</span><span>Scannen</span></button>
     <button data-tab="rules"><span class="ico">🧩</span><span>Regeln</span></button>
     <button data-tab="collection"><span class="ico">📚</span><span>Sammlung</span></button>
     <button data-tab="settings"><span class="ico">⚙️</span><span>Einstellungen</span></button>
   </nav>
-  <div id="dbStatus" class="muted small">Datenbank wird geladen…</div>
+  <div class="head-right">
+    <div id="dbStatus" class="muted small">Datenbank wird geladen…</div>
+    <button id="btnTheme" title="Hell / Dunkel umschalten">🌙</button>
+  </div>
 </header>
 
 <div id="secureWarning" class="banner" hidden>
@@ -57,7 +72,7 @@
             <div class="region" data-r="atk"></div>
           </div>
         </div>
-        <div id="cameraHint">Tippe auf „Kamera starten“ – der Live-Scan beginnt sofort.<br>Karte so in den Rahmen halten, dass sie ihn ausfüllt.</div>
+        <div id="cameraHint"><img src="logo.svg" alt=""><div>Tippe auf „Kamera starten“ – der Live-Scan beginnt sofort.<br>Karte so in den Rahmen halten, dass sie ihn ausfüllt.</div></div>
         <div id="liveIndicator" hidden></div>
         <div id="formatBadge" hidden></div>
       </div>
@@ -165,6 +180,18 @@
 <!-- ============ EINSTELLUNGEN ============ -->
 <section id="tab-settings" class="tab">
   <div class="card-box settings">
+    <h2>Design</h2>
+    <label>Darstellung
+      <select data-set="theme"><option value="auto">Automatisch (wie das Gerät)</option><option value="light">Hell</option><option value="dark">Dunkel</option></select>
+    </label>
+
+    <h2>Lernen</h2>
+    <p class="muted small">Nach jedem Scan fragt die App „Richtig erkannt?“. Bestätigte und korrigierte Karten merkt sie sich:
+      Liest sie denselben Text wieder, erkennt sie die Karte sofort – ohne zusätzliche Prüfungen und ohne zweite Bestätigung.</p>
+    <label class="chk"><input type="checkbox" data-set="autoLearn"> Ohne Antwort als „richtig“ werten (schwächer gewichtet), sobald die nächste Karte kommt</label>
+    <div id="learnStats" class="learn-stats">–</div>
+    <button id="btnResetLearn" class="danger small">Gelerntes zurücksetzen</button>
+
     <h2>Datenbank</h2>
     <label>Sprache der Kartennamen
       <select data-set="lang"><option value="de">Deutsch</option><option value="en">Englisch</option></select>
@@ -201,6 +228,6 @@
 </section>
 </main>
 
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

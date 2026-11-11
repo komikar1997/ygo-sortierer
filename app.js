@@ -45,9 +45,46 @@ const DEFAULT_SETTINGS = {
   defaultPile: 'Rest', debug: false,
   formatScan: false, formatTarget: 'GOAT', histCat: '', histFormat: '',
   checkFrame: true, useAtk: true, useStars: true, guideScale: 0.88, regions: {},
+  theme: 'auto', autoLearn: true,
 };
 const settings = { ...DEFAULT_SETTINGS, ...LS.get('settings', {}) };
 const saveSettings = () => LS.set('settings', settings);
+
+/* --------------------------------------------------------- Lernen */
+// Gedächtnis: gelesener (normalisierter) OCR-Text -> Karten-ID mit Gewicht.
+//  +1 bei 👍, +2 bei Korrektur auf die richtige Karte, +0.5 wenn ohne Einspruch weitergescannt wurde.
+//  "neg" merkt sich falsche Zuordnungen (👎), die dann abgestraft werden.
+let memory = { alias: {}, neg: {}, stats: { ok: 0, wrong: 0, auto: 0, fast: 0 }, ...LS.get('memory', {}) };
+const saveMemory = () => LS.set('memory', memory);
+const LEARN_FAST = 2; // ab diesem Gewicht wird ohne Zusatzprüfung sofort erkannt
+function learn(key, id, w) {
+  if (!key || key.length < 3 || !id) return;
+  const a = (memory.alias[key] ||= {});
+  a[id] = Math.min(10, (a[id] || 0) + w);
+  if (a[id] <= 0) delete a[id];
+  if (!Object.keys(a).length) delete memory.alias[key];
+  // Speicher begrenzen (älteste Einträge zuerst raus)
+  const keys = Object.keys(memory.alias);
+  if (keys.length > 4000) for (const k of keys.slice(0, keys.length - 4000)) delete memory.alias[k];
+  saveMemory();
+}
+function unlearn(key, id) {
+  if (!key || !id) return;
+  if (memory.alias[key]?.[id]) { delete memory.alias[key][id]; if (!Object.keys(memory.alias[key]).length) delete memory.alias[key]; }
+  const n = (memory.neg[key] ||= {});
+  n[id] = (n[id] || 0) + 1;
+  saveMemory();
+}
+// Gelernte Zuordnungen für einen gelesenen Text (exakt oder fast gleich)
+function learnedFor(key) {
+  if (!key || key.length < 3) return {};
+  if (memory.alias[key]) return memory.alias[key];
+  if (key.length < 8) return {};
+  for (const [k, ids] of Object.entries(memory.alias)) {
+    if (Math.abs(k.length - key.length) <= 2 && lev(k, key, 2) <= 2) return ids;
+  }
+  return {};
+}
 
 /* ------------------------------------------------------- Übersetzungen */
 const ATTR_DE = { DARK: 'FINSTERNIS', LIGHT: 'LICHT', EARTH: 'ERDE', WATER: 'WASSER', FIRE: 'FEUER', WIND: 'WIND', DIVINE: 'GÖTTLICH' };
@@ -102,9 +139,27 @@ function parseDate(s) {
   return '';
 }
 // Spielformate: Karte gehört dazu, wenn ihre Erstveröffentlichung (TCG) im Zeitraum liegt
-const DEFAULT_FORMATS = [{ id: 'goat', name: 'GOAT', from: '2002-01-01', to: '2005-08-05' }];
+const DEFAULT_FORMATS = [
+  { id: 'goat', name: 'GOAT', from: '2002-01-01', to: '2005-08-05' },
+  { id: 'edison', name: 'Edison', from: '2002-01-01', to: '2010-04-21' },
+];
 let formats = LS.get('formats', null) || DEFAULT_FORMATS.map(f => ({ ...f }));
 const saveFormats = () => LS.set('formats', formats);
+// Bestehende Installationen: Edison einmalig ergänzen
+if (!LS.get('formatsV2', false)) {
+  if (!formats.some(f => f.id === 'edison' || /edd?ison/i.test(f.name))) formats.push({ ...DEFAULT_FORMATS[1] });
+  saveFormats(); LS.set('formatsV2', true);
+}
+
+/* ------------------------------------------------- Links */
+// cardcluster.de nutzt den englischen Namen als Adresse: Kleinbuchstaben, Sonderzeichen wie ' / & : entfernt,
+// Leerzeichen -> Bindestrich (z.B. "Harpie's Feather Duster" -> harpies-feather-duster, "D/D/D ..." -> ddd-...)
+function cardclusterSlug(name) {
+  return String(name).replace(/±/g, ' plus minus ').toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9\s-]/g, '').trim().replace(/[\s-]+/g, '-').replace(/^-|-$/g, '');
+}
+const cardclusterUrl = card => 'https://cardcluster.de/card/' + cardclusterSlug(card.n);
 function formatsOf(c) {
   const d = c.d;
   if (!d) return [];
@@ -355,10 +410,14 @@ function lev(a, b, max) {
 }
 // Für den Vergleich mit OCR-Text: Umlaute vereinheitlichen (OCR liest "ä" mal als "a", mal als "ä")
 const normLoose = s => normName(s).replace(/ae/g, 'a').replace(/oe/g, 'o').replace(/ue/g, 'u').replace(/ss/g, 's');
-function fuzzyName(text, k = 5) {
+// Schlüssel für einen gelesenen Namen (auch fürs Lernen): längste Zeile, Zeichen am Ende weg, vereinheitlicht
+function ocrKey(text) {
   const lines = String(text).split('\n').map(s => s.trim()).filter(Boolean).sort((a, b) => b.length - a.length);
   // einzelne Zeichen am Ende (z.B. das Attribut-Symbol) abschneiden
-  const q = normLoose((lines[0] || '').replace(/\s+\S{1,2}$/, ''));
+  return normLoose((lines[0] || '').replace(/\s+\S{1,2}$/, ''));
+}
+function fuzzyName(text, k = 5) {
+  const q = ocrKey(text);
   if (q.length < 3) return [];
   const scores = new Map();
   for (const e of nameIndex) {
@@ -655,6 +714,11 @@ function verifyCandidate(cand, cues) {
   return { ...cand, final: s, why };
 }
 
+// Welche Sprache hatte der gelesene Name? (näher am deutschen oder am englischen Namen)
+function guessLang(card, key) {
+  if (!card.nd || normLoose(card.nd) === normLoose(card.n)) return '';
+  return lev(normLoose(card.nd), key, 99) <= lev(normLoose(card.n), key, 99) ? 'Deutsch' : 'Englisch';
+}
 async function recognizeCard(card, mode) {
   const out = { codeText: '', nameText: '', atkText: '', match: null, candidates: [], crops: [], cues: {} };
   const fr = analyzeCard(card);
@@ -694,7 +758,27 @@ async function recognizeCard(card, mode) {
   out.crops.push(rc);
   const { data } = await w.recognize(rc);
   out.nameText = data.text.trim();
+  out.key = ocrKey(out.nameText);
+  const learned = learnedFor(out.key), neg = memory.neg[out.key] || {};
+
+  // Schnellweg: diesen Text haben wir schon öfter bestätigt -> sofort erkennen (spart ATK/Sterne-Prüfung)
+  const top = Object.entries(learned).sort((a, b) => b[1] - a[1])[0];
+  if (top && top[1] >= LEARN_FAST) {
+    const lc = byId.get(+top[0]), exp = lc && expectedFrame(lc);
+    const frameOk = !fr.cls || !exp || exp === fr.cls || (FRAME_NEAR[exp] || []).includes(fr.cls);
+    if (lc && frameOk) {
+      memory.stats.fast++;
+      out.match = { card: lc, set: langOnly(guessLang(lc, out.key)), via: 'Gelernt', score: 1 };
+      return out;
+    }
+  }
+
   let cands = fuzzyName(out.nameText, 8);
+  // gelernte Karten immer mit in die Auswahl nehmen
+  for (const id of Object.keys(learned)) {
+    const c = byId.get(+id);
+    if (c && !cands.some(x => x.card === c)) cands.push({ card: c, score: 0.7, lang: guessLang(c, out.key) });
+  }
   if (!cands.length) return out;
   if (settings.useAtk && cands.some(c => isMonster(c.card))) {
     const arc = regionCanvas(card, REGIONS.atk, 56);
@@ -704,7 +788,12 @@ async function recognizeCard(card, mode) {
     Object.assign(out.cues, parseAtkDef(out.atkText));
   }
   if (settings.useStars) out.cues.stars = countStars(card, fr.gains);
-  cands = cands.map(c => verifyCandidate(c, out.cues)).sort((a, b) => b.final - a.final);
+  cands = cands.map(c => {
+    const v = verifyCandidate(c, out.cues), lw = learned[c.card.id] || 0, nw = neg[c.card.id] || 0;
+    if (lw) { v.final += 0.06 * Math.min(lw, 3); v.why.push('gelernt ✓'); }
+    if (nw) { v.final -= 0.25 * Math.min(nw, 2); v.why.push('als falsch markiert ✗'); }
+    return v;
+  }).sort((a, b) => b.final - a.final);
   out.candidates = cands;
   const best = cands[0], qlen = normLoose(out.nameText).length;
   // kurze gelesene Texte sind unsicher -> strengere Schwelle
@@ -917,9 +1006,10 @@ async function liveLoop(run) {
           } else {
             pendingCount = pendingId === id ? pendingCount + 1 : 1;
             pendingId = id;
-            if (pendingCount >= settings.confirmations) {
+            // gelernte Karten brauchen keine zweite Bestätigung -> schneller
+            if (pendingCount >= settings.confirmations || m.via === 'Gelernt') {
               lastAcceptedId = id; pendingId = null;
-              accept(m.card, m.set, { via: m.via, score: m.score, thumb: card, candidates: r.candidates });
+              accept(m.card, m.set, { via: m.via, score: m.score, thumb: card, key: r.key, nameText: r.nameText });
               liveStatus('✓ erfasst – nächste Karte');
             } else liveStatus('prüfe…');
           }
@@ -961,11 +1051,17 @@ function accept(card, set, opts = {}) {
     via: opts.via || 'manuell', score: opts.score ?? 1, added: false,
     cat: category(card), formats: formatsOf(card),
     formatHit: settings.formatScan ? isFormatHit(card) : null, // null = Format-Suche aus
+    key: opts.key || '', nameText: opts.nameText || '', fb: opts.fb || '',
   };
   const rule = applyRules(entry);
   const pile = entry.pile;
   if (pile !== null && settings.addToCollection && (!rule || rule.collect !== false)) {
     addToCollection(entry); entry.added = true;
+  }
+  // Vorherige Karte ohne Einspruch -> leicht als "richtig" lernen
+  const prev = history[0];
+  if (settings.autoLearn && prev && !prev.fb && prev.key && prev.via !== 'Gelernt') {
+    learn(prev.key, prev.id, 0.5); prev.fb = 'auto'; memory.stats.auto++; saveMemory();
   }
   history.unshift(entry);
   history.length = Math.min(history.length, 200);
@@ -1026,7 +1122,7 @@ function formatFlash(hit) {
   badge.className = hit ? 'hit' : 'miss';
   badge.textContent = hit ? `✓ ${formatTargetLabel()}!` : `✗ nicht ${formatTargetLabel()}`;
   clearTimeout(flashTimer);
-  flashTimer = setTimeout(() => { badge.hidden = true; wrap.classList.remove('flash-hit', 'flash-miss'); }, hit ? 2500 : 1200);
+  flashTimer = setTimeout(() => { badge.hidden = true; wrap.classList.remove('flash-hit', 'flash-miss'); }, 2500);
 }
 function feedback(entry, rule) {
   // Format-Suche aktiv: Treffer = grün + positiver Ton, sonst nur kurzer leiser Ton
@@ -1041,7 +1137,11 @@ function feedback(entry, rule) {
         u.lang = 'de-DE';
         speechSynthesis.speak(u);
       }
-    } else if (settings.sound) beep(240, 0.09, 0, 'sine', 0.12);
+    } else {
+      // passt nicht: rotes Aufleuchten + absteigender "Nein"-Ton
+      if (settings.sound) { beep(420, 0.16, 0, 'triangle', 0.28); beep(260, 0.3, 0.17, 'triangle', 0.28); }
+      if (settings.vibrate && navigator.vibrate) navigator.vibrate(260);
+    }
     return;
   }
   const alarm = rule?.alarm;
@@ -1087,7 +1187,7 @@ function showResult(card, set, entry, rule, opts) {
   const printings = [...new Set(card.s.map(s => s[0]))];
   el.innerHTML = `
     ${fh === true ? `<div class="fmt-banner hit">🎯 ${esc(formatTargetLabel())} – Treffer! Zur Seite legen</div>` : ''}
-    ${fh === false ? `<div class="fmt-banner miss">nicht ${esc(formatTargetLabel())}${entry.formats?.length ? ' (' + esc(entry.formats.join(', ')) + ')' : ''}</div>` : ''}
+    ${fh === false ? `<div class="fmt-banner miss">✗ Nicht ${esc(formatTargetLabel())}${entry.formats?.length ? ' (nur ' + esc(entry.formats.join(', ')) + ')' : ''}</div>` : ''}
     <div class="pile" style="background:${esc(entry.color)}">${entry.pile === null ? '<span class="muted">ignoriert</span>' : '→ ' + esc(entry.pile)}</div>
     <div class="info">
       ${thumb ? `<img src="${thumb}" alt="">` : ''}
@@ -1103,9 +1203,15 @@ function showResult(card, set, entry, rule, opts) {
           📅 Erstveröffentlichung: <b>${card.d ? fmtDate(card.d) : '–'}</b> (TCG)${card.do ? ` · ${fmtDate(card.do)} (OCG/Japan)` : ''}
           · Format: <b>${esc(formatsOf(card).join(', ') || 'keins')}</b>
         </div>
-        <div class="muted small via">erkannt über ${esc(entry.via)}${entry.via === 'Name' ? ` (${Math.round(entry.score * 100)} %)` : ''}${rule ? ` · Regel „${esc(rule.name)}“` : ' · keine Regel passt'}${entry.added ? ' · zur Sammlung hinzugefügt' : ''}</div>
+        <div class="muted small via">erkannt über ${entry.via === 'Gelernt' ? '<span class="tag learned">🧠 Gelernt</span>' : esc(entry.via)}${entry.via === 'Name' ? ` (${Math.round(entry.score * 100)} %)` : ''}${rule ? ` · Regel „${esc(rule.name)}“` : ' · keine Regel passt'}${entry.added ? ' · zur Sammlung hinzugefügt' : ''}</div>
+        <div style="margin-top:6px"><a class="cc-link" href="${esc(cardclusterUrl(card))}" target="_blank" rel="noopener">🔗 Auf cardcluster ansehen</a></div>
       </div>
     </div>
+    <div class="feedback${entry.fb === 'ok' || entry.fb === 'fixed' ? ' done' : ''}" data-fb>
+      ${entry.fb === 'ok' ? '<span class="q">✓ Danke – gemerkt!</span>' : entry.fb === 'fixed' ? '<span class="q">✓ Korrigiert und gemerkt</span>'
+        : '<span class="q">Richtig erkannt?</span><button class="small yes" data-a="yes">👍 Ja</button><button class="small no" data-a="no">👎 Nein</button>'}
+    </div>
+    <div class="fix-box" data-fix hidden></div>
     <div class="actions">
       ${entry.added ? '<button data-a="plus">＋1 weiteres Exemplar</button>' : ''}
       <button data-a="undo">↶ Rückgängig</button>
@@ -1117,20 +1223,51 @@ function showResult(card, set, entry, rule, opts) {
   el.querySelector('[data-a=print]')?.addEventListener('change', e => e.target.value && updateEntry(entry, { code: e.target.value }));
   el.querySelector('[data-a=lang]').addEventListener('change', e => updateEntry(entry, { lang: e.target.value }));
 
-  // Alternativen anbieten, falls über den Namen erkannt
-  renderCandidates((opts.candidates || []).filter(c => c.card.id !== card.id), entry);
+  // Rückfrage: richtig erkannt?
+  el.querySelector('[data-a=yes]')?.addEventListener('click', () => {
+    if (entry.key) learn(entry.key, entry.id, 1);
+    entry.fb = 'ok'; memory.stats.ok++; saveMemory(); saveHistory();
+    const fb = el.querySelector('[data-fb]'); fb.classList.add('done'); fb.innerHTML = '<span class="q">✓ Danke – gemerkt!</span>';
+    renderLearnStats();
+  });
+  el.querySelector('[data-a=no]')?.addEventListener('click', () => showFixBox(el, entry, opts.thumb));
 }
-function renderCandidates(cands, replaceEntry, thumb) {
-  const box = $('#candidates');
-  if (!cands?.length) { box.innerHTML = ''; return; }
-  // eingeklappt, damit es auf dem Handy keinen Platz kostet
-  box.innerHTML = `<details><summary class="muted small">Falsche Karte? ${cands.length} Alternativen</summary><div class="list">${cands.map((c, i) =>
-    `<button data-i="${i}"><span>${esc(displayName(c.card))}</span><span class="muted small">${Math.round(Math.min(1, c.final ?? c.score) * 100)} %</span></button>`).join('')}</div></details>`;
-  $$('button', box).forEach(b => b.addEventListener('click', () => {
-    if (replaceEntry) undo(replaceEntry);
-    const cand = cands[+b.dataset.i];
-    accept(cand.card, langOnly(cand.lang), { via: 'Auswahl', thumb });
-  }));
+// 👎: richtige Karte auswählen (Vorschläge zum gelesenen Text + freie Suche)
+function showFixBox(el, entry, thumb) {
+  const box = el.querySelector('[data-fix]');
+  box.hidden = false;
+  const sugg = (entry.nameText ? fuzzyName(entry.nameText, 7) : []).filter(c => c.card.id !== entry.id).slice(0, 6);
+  box.innerHTML = `<b>Welche Karte ist es?</b>
+    <div class="list">${sugg.map(c => `<button data-id="${c.card.id}"><span>${esc(displayName(c.card))}</span><span class="muted small">${Math.round(c.score * 100)} %</span></button>`).join('')}</div>
+    <input type="search" placeholder="🔎 Richtige Karte suchen (DE oder EN)…" autocomplete="off">
+    <div class="list" data-res></div>
+    <div class="actions"><button class="small danger" data-a="discard">Karte verwerfen</button></div>`;
+  const pick = c => {
+    // falsche Zuordnung vergessen, richtige stark merken
+    if (entry.key) { unlearn(entry.key, entry.id); learn(entry.key, c.id, 2); }
+    memory.stats.wrong++; saveMemory();
+    undo(entry);
+    accept(c, langOnly(entry.key ? guessLang(c, entry.key) : entry.lang), { via: 'Korrektur', thumb, key: entry.key, nameText: entry.nameText, fb: 'fixed' });
+    renderLearnStats();
+  };
+  box.addEventListener('click', e => {
+    const b = e.target.closest('button[data-id]');
+    if (b) return pick(byId.get(+b.dataset.id));
+    if (e.target.closest('[data-a=discard]')) {
+      if (entry.key) unlearn(entry.key, entry.id);
+      memory.stats.wrong++; saveMemory();
+      undo(entry); showBusy('Verworfen – gemerkt, dass es diese Karte nicht war'); renderLearnStats();
+    }
+  });
+  bindSearch(box.querySelector('input'), box.querySelector('[data-res]'), pick);
+  box.querySelector('input').focus();
+}
+function renderLearnStats() {
+  const el = $('#learnStats');
+  if (!el) return;
+  const s = memory.stats, n = Object.keys(memory.alias).length;
+  const fastReady = Object.values(memory.alias).filter(ids => Math.max(...Object.values(ids)) >= LEARN_FAST).length;
+  el.textContent = `🧠 ${n} gelesene Namen gelernt · ${fastReady} davon werden sofort erkannt · 👍 ${s.ok} · 👎 ${s.wrong} · still bestätigt ${s.auto} · Schnellerkennungen ${s.fast}`;
 }
 const CAT_ICON = { Monster: '🟧', Zauber: '🟩', Falle: '🟪', Token: '⬜', Skill: '🟦' };
 function historyFiltered() {
@@ -1151,10 +1288,10 @@ function renderHistory() {
   $('#histCount').textContent = history.length ? `${list.length} von ${history.length}` : '';
   $('#history').innerHTML = list.slice(0, 50).map(h => {
     const c = byId.get(h.id), cat = category(c), fs = formatsOf(c);
-    return `<li class="${h.formatHit === true ? 'is-hit' : ''}">
+    return `<li class="${h.formatHit === true ? 'is-hit' : h.formatHit === false ? 'is-miss' : ''}">
       <span class="dot" style="background:${esc(h.color)}"></span>
       <span class="h-main">
-        <span class="h-name">${esc(displayName(c))}</span>
+        <span class="h-name">${esc(displayName(c))}<a href="${esc(cardclusterUrl(c))}" target="_blank" rel="noopener" title="Auf cardcluster ansehen">🔗</a></span>
         <span class="h-tags"><span class="tag">${CAT_ICON[cat] || ''} ${esc(cat)}</span>${fs.map(f => `<span class="tag fmt">${esc(f)}</span>`).join('')}${h.lang ? `<span class="tag">${esc(LANG_REGION[h.lang] || h.lang)}</span>` : ''}${h.code ? `<span class="muted small">${esc(h.code)}</span>` : ''}</span>
       </span>
       <span class="p">${h.pile === null ? '<span class="muted">ignoriert</span>' : esc(h.pile)}</span>
@@ -1309,15 +1446,19 @@ const COLUMNS = [
   fieldCol('banlist', 'Banlist'),
   { key: 'preis', label: 'Preis', num: true, val: (e, c) => euro(c.p), csv: (e, c) => (c.p || 0).toFixed(2).replace('.', ',') },
   { key: 'wert', label: 'Gesamtwert', num: true, val: (e, c) => euro(e.count * (c.p || 0)), csv: (e, c) => (e.count * (c.p || 0)).toFixed(2).replace('.', ',') },
+  { key: 'link', label: 'cardcluster', val: (e, c) => cardclusterUrl(c),
+    html: (e, c) => `<a class="cc-link" href="${esc(cardclusterUrl(c))}" target="_blank" rel="noopener">🔗 öffnen</a>` },
   { key: 'stapel', label: 'Stapel', val: e => e.pile || '',
     html: e => (e.pile ? `<span class="pile-chip" style="background:${esc(e.color || '#6b7280')}">${esc(e.pile)}</span>` : '') },
   { key: 'zuletzt', label: 'Zuletzt gescannt', val: e => (e.last ? new Date(e.last).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' }) : '') },
 ];
 const COL_BY_KEY = Object.fromEntries(COLUMNS.map(c => [c.key, c]));
-const DEFAULT_COLS = ['anzahl', 'name', 'sprache', 'kategorie', 'attribut', 'typ', 'stufe', 'atk', 'def', 'setcode', 'seltenheit', 'erstdruck', 'format', 'preis', 'stapel'];
+const DEFAULT_COLS = ['anzahl', 'name', 'sprache', 'kategorie', 'attribut', 'typ', 'stufe', 'atk', 'def', 'setcode', 'seltenheit', 'erstdruck', 'format', 'preis', 'stapel', 'link'];
 
 let collView = { sort: [['stapel', 1], ['name', 1], ['', 1]], group: 'stapel', q: '', cols: DEFAULT_COLS, ...LS.get('collView', {}) };
 collView.cols = (collView.cols || DEFAULT_COLS).filter(k => COL_BY_KEY[k]);
+// neue Spalte "cardcluster" einmalig bei bestehenden Ansichten ergänzen
+if (!collView.linkCol) { if (!collView.cols.includes('link')) collView.cols.push('link'); collView.linkCol = true; }
 const saveCollView = () => LS.set('collView', collView);
 const visibleCols = () => collView.cols.map(k => COL_BY_KEY[k]).filter(Boolean);
 
@@ -1426,7 +1567,7 @@ function initCollectionUi() {
     saveCollection(); renderCollection();
   });
   $('#btnCsv').addEventListener('click', exportCsv);
-  $('#btnBackup').addEventListener('click', () => download('ygo-backup.json', JSON.stringify({ version: 2, collection, rules, formats, settings, collView }, null, 1), 'application/json'));
+  $('#btnBackup').addEventListener('click', () => download('ygo-backup.json', JSON.stringify({ version: 3, collection, rules, formats, settings, collView, memory }, null, 1), 'application/json'));
   $('#backupInput').addEventListener('change', async e => {
     const f = e.target.files[0]; if (!f) return;
     try {
@@ -1435,6 +1576,7 @@ function initCollectionUi() {
       if (data.collection) { collection = data.collection; saveCollection(); }
       if (data.rules) { rules = data.rules.map(hydrateRule); saveRules(); renderRules(); }
       if (data.formats) { formats = data.formats; saveFormats(); renderFormats(); }
+      if (data.memory) { memory = { alias: {}, neg: {}, stats: { ok: 0, wrong: 0, auto: 0, fast: 0 }, ...data.memory }; saveMemory(); renderLearnStats(); }
       renderCollection();
     } catch (err) { alert('Backup konnte nicht gelesen werden: ' + err.message); }
     e.target.value = '';
@@ -1518,9 +1660,19 @@ function initSettingsUi() {
       if (k === 'lang') { renderCollection(); renderHistory(); }
       if (k === 'debug') $('#debug').hidden = !v;
       if (k === 'useAtk' || k === 'useStars') layoutGuide();
+      if (k === 'theme') applyTheme();
     });
   }
   $('#btnReloadDb').addEventListener('click', () => { if (confirm('Kartendatenbank neu herunterladen (z.B. für neue Sets und aktuelle Preise)?')) loadDb(true); });
+}
+
+// Hell/Dunkel anwenden ("auto" folgt dem Gerät)
+function applyTheme() {
+  const t = settings.theme === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : settings.theme;
+  document.documentElement.dataset.theme = t;
+  $('#btnTheme').textContent = t === 'dark' ? '☀️' : '🌙';
+  $('#btnTheme').title = t === 'dark' ? 'Helles Design' : 'Dunkles Design';
+  document.querySelector('meta[name=theme-color]').content = t === 'dark' ? '#0e1626' : '#4f86d6';
 }
 
 function init() {
@@ -1586,6 +1738,18 @@ function init() {
   initFormatsUi();
   initSettingsUi();
   initRegionEditor();
+  applyTheme();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
+  $('#btnTheme').addEventListener('click', () => {
+    settings.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    saveSettings(); applyTheme();
+    const sel = $('[data-set=theme]'); if (sel) sel.value = settings.theme;
+  });
+  renderLearnStats();
+  $('#btnResetLearn').addEventListener('click', () => {
+    if (!confirm('Alles Gelernte vergessen? (Die Sammlung bleibt erhalten.)')) return;
+    memory = { alias: {}, neg: {}, stats: { ok: 0, wrong: 0, auto: 0, fast: 0 } }; saveMemory(); renderLearnStats();
+  });
   renderHistory();
   loadDb();
   // OCR-Engine schon mal vorwärmen
