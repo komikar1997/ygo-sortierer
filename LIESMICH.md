@@ -1,24 +1,24 @@
 # YGO Karten-Sortierer
 
-Web-App zum Scannen und Sortieren von Yu-Gi-Oh!-Karten – läuft komplett im Browser (Laptop oder Handy).
+Web-App zum Scannen und Sortieren von Yu-Gi-Oh!-Karten – läuft komplett im Browser (Handy oder Laptop).
 
-## Starten (Laptop)
+**Online:** https://komikar1997.github.io/ygo-sortierer/
+
+## Lokal starten (Laptop)
 ```
 powershell -ExecutionPolicy Bypass -File serve.ps1
 ```
-Dann im Browser http://localhost:8765 öffnen. Beim ersten Start wird die Kartendatenbank (≈ 14.600 Karten, inkl. deutscher Namen) von YGOPRODeck geladen und im Browser gespeichert.
-
-## Handy
-Handy-Browser erlauben Live-Kamera nur über **HTTPS**. Möglichkeiten:
-- Die 3 Dateien (`index.html`, `app.js`, `style.css`) kostenlos hosten, z. B. GitHub Pages oder Netlify Drop → HTTPS-Link am Handy öffnen.
-- Ohne HTTPS funktioniert „Bild laden“ trotzdem (öffnet die Handykamera für ein Einzelfoto).
+Dann im Browser http://localhost:8765 öffnen. Beim ersten Start wird die Kartendatenbank (≈ 14.600 Karten, inkl. deutscher Namen und Erscheinungsdaten) von YGOPRODeck geladen und im Browser gespeichert.
+Handy-Browser erlauben die Kamera nur über **HTTPS** – am Handy daher den Online-Link nutzen.
 
 ## So funktioniert's
+- **Kamera starten** → der Live-Scan läuft sofort. Mit „Pause“ anhalten.
 - **Scannen nach:** Set-Code (z. B. `LOB-DE001`, am zuverlässigsten, liefert auch Set & Seltenheit) und/oder Kartenname.
-- **Live-Scan:** Karte in den Rahmen halten → Stapel wird groß angezeigt, Ton/Ansage/Vibration. Karte kurz wegnehmen, bevor das nächste identische Exemplar kommt (oder „＋1“ drücken).
-- **Regeln:** von oben nach unten, die erste passende entscheidet Stapel, Farbe, Ton, Alarm. Platzhalter im Stapelnamen: `{attribut}`, `{archetyp}`, `{kategorie}`, `{stufe}`, `{set}`, `{anfangsbuchstabe}`, `{typ}`, `{monsterart}`, `{deck}`, `{banlist}` …
-- **Sprache:** Deutsche und englische Karten werden erkannt. Die Sprache kommt aus dem Set-Code (`-DE`/`-EN`) bzw. dem erkannten Namen und lässt sich im Ergebnis korrigieren.
-- **Erstveröffentlichung:** erstes Erscheinen im TCG (Europa/USA), zusätzlich OCG (Japan) – im Scanergebnis und als Tabellenspalte.
-- **Spielformate** (Tab „Regeln“): Zeitraum je Format, z. B. GOAT 01.01.2002–05.08.2005. Eine Karte gehört dazu, wenn ihre TCG-Erstveröffentlichung im Zeitraum liegt. Vorlage „Nach Spielformat“ sortiert danach.
-- **Sammlung:** Spalten frei wählbar und verschiebbar („Spalten anpassen“), bis zu 3 Sortierstufen, Gruppieren, CSV-Export (mit den angezeigten Spalten), JSON-Backup.
+- **🎯 Format-Suche:** Haken setzen und Format wählen (z. B. GOAT). Passt eine gescannte Karte ins Format, leuchtet alles grün und es kommt ein positiver Ton (plus Ansage/Vibration, falls eingeschaltet). Sonst nur ein kurzer leiser Ton.
+- **Letzte Scans:** zeigen Kategorie, Format und Sprache; filterbar nach Kategorie und Format („Nur Format-Treffer“). Bleiben nach dem Neuladen erhalten.
+- **Regeln:** von oben nach unten, die erste passende entscheidet Stapel, Farbe, Ton, Alarm. Platzhalter im Stapelnamen: `{attribut}`, `{archetyp}`, `{kategorie}`, `{stufe}`, `{set}`, `{format}`, `{jahr}`, `{sprache}` …
+- **Sprache:** Deutsche und englische Karten werden erkannt (aus Set-Code `-DE`/`-EN` bzw. dem erkannten Namen), im Ergebnis korrigierbar.
+- **Erstveröffentlichung:** erstes Erscheinen im TCG (Europa/USA), zusätzlich OCG (Japan).
+- **Spielformate** (Tab „Regeln“): Zeitraum je Format, z. B. GOAT 01.01.2002–05.08.2005. Eine Karte gehört dazu, wenn ihre TCG-Erstveröffentlichung im Zeitraum liegt.
+- **Sammlung:** Spalten frei wählbar, bis zu 3 Sortierstufen, Gruppieren, CSV-Export, JSON-Backup.
 - **Erkennung klappt nicht?** Einstellungen → „OCR-Ausschnitte anzeigen“ zeigt, was die Kamera liest.

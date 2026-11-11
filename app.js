@@ -43,6 +43,7 @@ const DEFAULT_SETTINGS = {
   lang: 'de', scanMode: 'both', interval: 600, confirmations: 2, minScore: 0.72,
   sound: true, speech: true, vibrate: true, addToCollection: true, ignoreUnmatched: false,
   defaultPile: 'Rest', debug: false,
+  formatScan: false, formatTarget: 'GOAT', histCat: '', histFormat: '',
 };
 const settings = { ...DEFAULT_SETTINGS, ...LS.get('settings', {}) };
 const saveSettings = () => LS.set('settings', settings);
@@ -107,6 +108,12 @@ function formatsOf(c) {
   const d = c.d;
   if (!d) return [];
   return formats.filter(f => f.name && (!f.from || d >= f.from) && (!f.to || d <= f.to)).map(f => f.name);
+}
+// Format-Suche: passt die Karte zum gesuchten Format? ('*' = irgendein Format)
+const formatTargetLabel = () => (settings.formatTarget === '*' ? 'ein Format' : settings.formatTarget);
+function isFormatHit(c) {
+  const fs = formatsOf(c);
+  return settings.formatTarget === '*' ? fs.length > 0 : fs.includes(settings.formatTarget);
 }
 
 /* ------------------------------------------------- Felder für Regeln */
@@ -314,6 +321,7 @@ async function loadDb(force = false) {
     buildIndex(data.cards);
     setDbStatus(`${CARDS.length.toLocaleString('de-DE')} Karten · Stand ${new Date(data.date).toLocaleDateString('de-DE')}`);
     renderCollection();
+    renderHistory();
     updateFormatCounts();
   } catch (e) {
     console.error(e);
@@ -555,11 +563,13 @@ async function startCamera(deviceId) {
     if (caps?.focusMode?.includes('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
   } catch { /* egal */ }
   await listCameras(track.getSettings().deviceId);
+  $('#videoBox').hidden = false;
   layoutGuide();
   $('#cameraHint').hidden = true;
-  $('#btnLive').disabled = $('#btnSnap').disabled = false;
-  $('#btnCamera').textContent = 'Kamera stoppen';
+  $('#btnLive').hidden = false;
+  $('#btnCamera').textContent = '■ Stopp';
   $('#btnCamera').classList.remove('primary');
+  setLive(true); // Live-Scan startet direkt mit der Kamera
 }
 function stopCamera() {
   setLive(false);
@@ -567,9 +577,11 @@ function stopCamera() {
   stream = null;
   video.srcObject = null;
   $('#guide').hidden = true;
+  $('#videoBox').hidden = true;
   $('#cameraHint').hidden = false;
-  $('#btnLive').disabled = $('#btnSnap').disabled = true;
-  $('#btnCamera').textContent = 'Kamera starten';
+  $('#liveIndicator').hidden = true;
+  $('#btnLive').hidden = true;
+  $('#btnCamera').textContent = '📷 Kamera starten';
   $('#btnCamera').classList.add('primary');
 }
 async function listCameras(activeId) {
@@ -597,70 +609,62 @@ function grabFrame() {
 }
 
 /* ------------------------------------------------------- Live-Scan */
-let live = false, liveBusy = false, pendingId = null, pendingCount = 0, lastAcceptedId = null, missCount = 0;
+let live = false, liveBusy = false, liveRun = 0, pendingId = null, pendingCount = 0, lastAcceptedId = null, missCount = 0;
 
 function setLive(on) {
   live = on;
+  liveRun++; // alte Schleifen beenden sich selbst
   const b = $('#btnLive');
-  b.textContent = on ? '⏸ Live-Scan stoppen' : '▶ Live-Scan';
-  b.classList.toggle('on', on);
-  $('#liveIndicator').hidden = !on;
-  if (on) { ensureAudio(); pendingId = null; lastAcceptedId = null; missCount = 0; liveStatus('suche Karte…'); liveLoop(); }
+  b.textContent = on ? '⏸ Pause' : '▶ Weiter';
+  b.classList.toggle('on', !on);
+  const ind = $('#liveIndicator');
+  ind.hidden = !stream;
+  ind.classList.toggle('paused', !on);
+  if (on) { ensureAudio(); pendingId = null; lastAcceptedId = null; missCount = 0; liveStatus('suche Karte…'); liveLoop(liveRun); }
+  else ind.textContent = 'PAUSE';
 }
 const liveStatus = t => { $('#liveIndicator').textContent = 'LIVE · ' + t; };
 
-async function liveLoop() {
-  if (!live) return;
+async function liveLoop(run) {
+  if (!live || run !== liveRun) return;
   if (!liveBusy && dbReady && video.readyState >= 2) {
     liveBusy = true;
     try {
       const card = grabFrame();
       const r = await recognizeCard(card, settings.scanMode);
-      renderDebug(r);
-      const m = r.match;
-      $('#guide').classList.toggle('hit', !!m);
-      if (!m) {
-        if (++missCount >= 2) { lastAcceptedId = null; pendingId = null; }
-        liveStatus('suche Karte…');
-      } else {
-        missCount = 0;
-        const id = m.card.id;
-        if (id === lastAcceptedId) {
-          liveStatus('✓ erfasst – nächste Karte');
+      if (run === liveRun) {
+        renderDebug(r);
+        const m = r.match;
+        $('#guide').classList.toggle('hit', !!m);
+        if (!m) {
+          if (++missCount >= 2) { lastAcceptedId = null; pendingId = null; }
+          liveStatus('suche Karte…');
         } else {
-          pendingCount = pendingId === id ? pendingCount + 1 : 1;
-          pendingId = id;
-          if (pendingCount >= settings.confirmations) {
-            lastAcceptedId = id; pendingId = null;
-            accept(m.card, m.set, { via: m.via, score: m.score, thumb: card, candidates: r.candidates });
+          missCount = 0;
+          const id = m.card.id;
+          if (id === lastAcceptedId) {
             liveStatus('✓ erfasst – nächste Karte');
-          } else liveStatus('prüfe…');
+          } else {
+            pendingCount = pendingId === id ? pendingCount + 1 : 1;
+            pendingId = id;
+            if (pendingCount >= settings.confirmations) {
+              lastAcceptedId = id; pendingId = null;
+              accept(m.card, m.set, { via: m.via, score: m.score, thumb: card, candidates: r.candidates });
+              liveStatus('✓ erfasst – nächste Karte');
+            } else liveStatus('prüfe…');
+          }
         }
       }
     } catch (e) { console.error(e); }
     liveBusy = false;
   }
-  setTimeout(liveLoop, settings.interval);
-}
-
-async function scanOnce(card) {
-  if (!dbReady) { alert('Die Kartendatenbank lädt noch.'); return; }
-  ensureAudio();
-  showBusy('Erkenne Karte…');
-  try {
-    const r = await recognizeCard(card, settings.scanMode);
-    renderDebug(r);
-    if (r.match) accept(r.match.card, r.match.set, { via: r.match.via, score: r.match.score, thumb: card, candidates: r.candidates });
-    else showNoMatch(r, card);
-  } catch (e) {
-    console.error(e);
-    showBusy('Fehler bei der Erkennung: ' + e.message);
-  }
+  setTimeout(() => liveLoop(run), settings.interval);
 }
 
 /* ------------------------------------------------------- Sammlung */
 let collection = LS.get('collection', {}); // key -> {id, code, setName, rarity, lang, count, pile, color, first, last}
-let history = [];
+let history = LS.get('history', []); // letzte Scans (bleiben nach Neuladen erhalten)
+const saveHistory = () => LS.set('history', history.slice(0, 200));
 const saveCollection = () => LS.set('collection', collection);
 const collKey = (id, code, lang) => id + '|' + (code || '') + '|' + (lang || '');
 
@@ -685,6 +689,8 @@ function accept(card, set, opts = {}) {
   const entry = {
     t: Date.now(), id: card.id, code: set.code || '', setName: set.name || '', rarity: (set.rarities || []).join(' / '), lang: set.lang || '',
     via: opts.via || 'manuell', score: opts.score ?? 1, added: false,
+    cat: category(card), formats: formatsOf(card),
+    formatHit: settings.formatScan ? isFormatHit(card) : null, // null = Format-Suche aus
   };
   const rule = applyRules(entry);
   const pile = entry.pile;
@@ -692,7 +698,8 @@ function accept(card, set, opts = {}) {
     addToCollection(entry); entry.added = true;
   }
   history.unshift(entry);
-  history.length = Math.min(history.length, 60);
+  history.length = Math.min(history.length, 200);
+  saveHistory();
   showResult(card, set, entry, rule, opts);
   feedback(entry, rule);
   renderHistory();
@@ -701,6 +708,7 @@ function accept(card, set, opts = {}) {
 function undo(entry) {
   if (entry.added) addToCollection(entry, -1);
   history = history.filter(h => h !== entry);
+  saveHistory();
   renderHistory(); renderCollection();
 }
 // Nachträglich Druck (Set-Code aus der DB) und/oder Sprache eines Scans ändern
@@ -718,6 +726,7 @@ function updateEntry(entry, { code, lang }) {
   else if (entry.code) entry.code = codeForLang(entry.code, entry.lang);
   const rule = applyRules(entry);
   if (entry.added) addToCollection(entry);
+  saveHistory();
   showResult(card, entrySet(entry), entry, rule, {});
   renderHistory(); renderCollection();
 }
@@ -735,7 +744,36 @@ function beep(freq, dur = 0.12, when = 0, type = 'sine', vol = 0.25) {
   o.connect(g).connect(audioCtx.destination); o.start(t); o.stop(t + dur);
 }
 function hashFreq(s) { let h = 0; for (const ch of String(s)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return 440 + (h % 12) * 45; }
+// Positiver Dreiklang für Format-Treffer
+function chime() { beep(660, 0.14, 0, 'sine', 0.3); beep(880, 0.14, 0.12, 'sine', 0.3); beep(1320, 0.3, 0.24, 'sine', 0.3); }
+let flashTimer;
+function formatFlash(hit) {
+  const wrap = $('#cameraWrap'), badge = $('#formatBadge');
+  wrap.classList.remove('flash-hit', 'flash-miss');
+  void wrap.offsetWidth; // Animation neu starten
+  wrap.classList.add(hit ? 'flash-hit' : 'flash-miss');
+  badge.hidden = false;
+  badge.className = hit ? 'hit' : 'miss';
+  badge.textContent = hit ? `✓ ${formatTargetLabel()}!` : `✗ nicht ${formatTargetLabel()}`;
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { badge.hidden = true; wrap.classList.remove('flash-hit', 'flash-miss'); }, hit ? 2500 : 1200);
+}
 function feedback(entry, rule) {
+  // Format-Suche aktiv: Treffer = grün + positiver Ton, sonst nur kurzer leiser Ton
+  if (entry.formatHit !== null && entry.formatHit !== undefined) {
+    formatFlash(entry.formatHit);
+    if (entry.formatHit) {
+      if (settings.sound) chime();
+      if (settings.vibrate && navigator.vibrate) navigator.vibrate([90, 60, 90]);
+      if (settings.speech && 'speechSynthesis' in window) {
+        speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(entry.formats.find(f => settings.formatTarget === '*' || f === settings.formatTarget) || 'Treffer');
+        u.lang = 'de-DE';
+        speechSynthesis.speak(u);
+      }
+    } else if (settings.sound) beep(240, 0.09, 0, 'sine', 0.12);
+    return;
+  }
   const alarm = rule?.alarm;
   if (settings.sound && entry.pile !== null && (!rule || rule.sound !== false)) {
     if (alarm) { for (let i = 0; i < 4; i++) beep(1200, 0.12, i * 0.18, 'square', 0.2); }
@@ -766,7 +804,8 @@ function showBusy(text) {
 }
 function showResult(card, set, entry, rule, opts) {
   const el = $('#result');
-  el.className = 'result' + (rule?.alarm ? ' alarm' : '');
+  const fh = entry.formatHit;
+  el.className = 'result' + (rule?.alarm && fh == null ? ' alarm' : '') + (fh === true ? ' format-hit' : fh === false ? ' format-miss' : '');
   let thumb = null;
   if (opts.thumb) {
     const t = document.createElement('canvas');
@@ -777,6 +816,8 @@ function showResult(card, set, entry, rule, opts) {
   const otherName = settings.lang === 'de' && card.nd && card.nd !== card.n ? card.n : settings.lang !== 'de' && card.nd ? card.nd : '';
   const printings = [...new Set(card.s.map(s => s[0]))];
   el.innerHTML = `
+    ${fh === true ? `<div class="fmt-banner hit">🎯 ${esc(formatTargetLabel())} – Treffer! Zur Seite legen</div>` : ''}
+    ${fh === false ? `<div class="fmt-banner miss">nicht ${esc(formatTargetLabel())}${entry.formats?.length ? ' (' + esc(entry.formats.join(', ')) + ')' : ''}</div>` : ''}
     <div class="pile" style="background:${esc(entry.color)}">${entry.pile === null ? '<span class="muted">ignoriert</span>' : '→ ' + esc(entry.pile)}</div>
     <div class="info">
       ${thumb ? `<img src="${thumb}" alt="">` : ''}
@@ -792,14 +833,14 @@ function showResult(card, set, entry, rule, opts) {
           📅 Erstveröffentlichung: <b>${card.d ? fmtDate(card.d) : '–'}</b> (TCG)${card.do ? ` · ${fmtDate(card.do)} (OCG/Japan)` : ''}
           · Format: <b>${esc(formatsOf(card).join(', ') || 'keins')}</b>
         </div>
-        <div class="muted small">erkannt über ${esc(entry.via)}${entry.via === 'Name' ? ` (${Math.round(entry.score * 100)} %)` : ''}${rule ? ` · Regel „${esc(rule.name)}“` : ' · keine Regel passt'}${entry.added ? ' · zur Sammlung hinzugefügt' : ''}</div>
+        <div class="muted small via">erkannt über ${esc(entry.via)}${entry.via === 'Name' ? ` (${Math.round(entry.score * 100)} %)` : ''}${rule ? ` · Regel „${esc(rule.name)}“` : ' · keine Regel passt'}${entry.added ? ' · zur Sammlung hinzugefügt' : ''}</div>
       </div>
     </div>
     <div class="actions">
       ${entry.added ? '<button data-a="plus">＋1 weiteres Exemplar</button>' : ''}
       <button data-a="undo">↶ Rückgängig</button>
       <select data-a="lang" title="Sprache der Karte"><option value="">Sprache …</option>${LANGS.map(l => `<option ${l === set?.lang ? 'selected' : ''}>${l}</option>`).join('')}</select>
-      ${printings.length ? `<select data-a="print"><option value="">${set?.code ? 'Druck ändern…' : 'Druck/Seltenheit wählen…'}</option>${printings.map(p => `<option value="${esc(p)}" ${set?.code && normCode(p) === normCode(set.code) ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>` : ''}
+      ${printings.length ? `<select data-a="print"><option value="">${set?.code ? 'Druck ändern…' : 'Druck/Seltenheit wählen…'}</option>${printings.map(p => `<option value="${esc(p)}" ${set?.code && normCode(p) === normCode(set.code) ? 'selected' : ''}>${esc(codeForLang(p, set?.lang))}</option>`).join('')}</select>` : ''}
     </div>`;
   el.querySelector('[data-a=plus]')?.addEventListener('click', () => { addToCollection(entry); renderCollection(); beep(hashFreq(entry.pile), 0.08); });
   el.querySelector('[data-a=undo]').addEventListener('click', () => { undo(entry); showBusy('Rückgängig gemacht'); });
@@ -809,31 +850,58 @@ function showResult(card, set, entry, rule, opts) {
   // Alternativen anbieten, falls über den Namen erkannt
   renderCandidates((opts.candidates || []).filter(c => c.card.id !== card.id), entry);
 }
-function showNoMatch(r, card) {
-  const el = $('#result');
-  el.className = 'result empty';
-  el.innerHTML = `<div class="pile">Nicht sicher erkannt</div>
-    <div class="muted small" style="margin-top:8px">Gelesen: ${esc(r.codeText || '–')} ${r.nameText ? ' / ' + esc(r.nameText) : ''}<br>
-    Wähle unten eine passende Karte oder suche manuell.</div>`;
-  renderCandidates(r.candidates, null, card);
-  beep(220, 0.15, 0, 'triangle', 0.15);
-}
 function renderCandidates(cands, replaceEntry, thumb) {
   const box = $('#candidates');
   if (!cands?.length) { box.innerHTML = ''; return; }
-  box.innerHTML = `<div class="muted small">${replaceEntry ? 'Falsche Karte? Stattdessen:' : 'Meintest du:'}</div><div class="list">${cands.map((c, i) =>
-    `<button data-i="${i}"><span>${esc(displayName(c.card))}</span><span class="muted small">${Math.round(c.score * 100)} %</span></button>`).join('')}</div>`;
+  // eingeklappt, damit es auf dem Handy keinen Platz kostet
+  box.innerHTML = `<details><summary class="muted small">Falsche Karte? ${cands.length} Alternativen</summary><div class="list">${cands.map((c, i) =>
+    `<button data-i="${i}"><span>${esc(displayName(c.card))}</span><span class="muted small">${Math.round(c.score * 100)} %</span></button>`).join('')}</div></details>`;
   $$('button', box).forEach(b => b.addEventListener('click', () => {
     if (replaceEntry) undo(replaceEntry);
     const cand = cands[+b.dataset.i];
     accept(cand.card, langOnly(cand.lang), { via: 'Auswahl', thumb });
   }));
 }
-function renderHistory() {
-  $('#history').innerHTML = history.slice(0, 15).map(h => {
+const CAT_ICON = { Monster: '🟧', Zauber: '🟩', Falle: '🟪', Token: '⬜', Skill: '🟦' };
+function historyFiltered() {
+  return history.filter(h => {
     const c = byId.get(h.id);
-    return `<li><span class="dot" style="background:${esc(h.color)}"></span><span>${esc(c ? displayName(c) : h.id)}${h.code ? ` <span class="muted small">${esc(h.code)}</span>` : ''}</span><span class="p">${h.pile === null ? '<span class="muted">ignoriert</span>' : esc(h.pile)}</span></li>`;
-  }).join('');
+    if (!c) return false;
+    if (settings.histCat && category(c) !== settings.histCat) return false;
+    const fs = formatsOf(c), hf = settings.histFormat;
+    if (hf === '__hit') return h.formatHit === true;
+    if (hf === '__none') return fs.length === 0;
+    if (hf) return fs.includes(hf);
+    return true;
+  });
+}
+function renderHistory() {
+  if (!dbReady) return;
+  const list = historyFiltered();
+  $('#histCount').textContent = history.length ? `${list.length} von ${history.length}` : '';
+  $('#history').innerHTML = list.slice(0, 50).map(h => {
+    const c = byId.get(h.id), cat = category(c), fs = formatsOf(c);
+    return `<li class="${h.formatHit === true ? 'is-hit' : ''}">
+      <span class="dot" style="background:${esc(h.color)}"></span>
+      <span class="h-main">
+        <span class="h-name">${esc(displayName(c))}</span>
+        <span class="h-tags"><span class="tag">${CAT_ICON[cat] || ''} ${esc(cat)}</span>${fs.map(f => `<span class="tag fmt">${esc(f)}</span>`).join('')}${h.lang ? `<span class="tag">${esc(LANG_REGION[h.lang] || h.lang)}</span>` : ''}${h.code ? `<span class="muted small">${esc(h.code)}</span>` : ''}</span>
+      </span>
+      <span class="p">${h.pile === null ? '<span class="muted">ignoriert</span>' : esc(h.pile)}</span>
+    </li>`;
+  }).join('') || `<li class="muted small">${history.length ? 'Keine Scans passen zum Filter.' : 'Noch keine Scans.'}</li>`;
+}
+// Auswahllisten, die die angelegten Formate enthalten, aktualisieren
+function refreshFormatSelects() {
+  const names = formats.map(f => f.name).filter(Boolean);
+  const ft = $('#formatTarget');
+  ft.innerHTML = names.map(n => `<option>${esc(n)}</option>`).join('') + '<option value="*">irgendein Format</option>';
+  if (!names.includes(settings.formatTarget) && settings.formatTarget !== '*') settings.formatTarget = names[0] || '*';
+  ft.value = settings.formatTarget;
+  const hf = $('#histFormat');
+  hf.innerHTML = `<option value="">Alle Formate</option><option value="__hit">🎯 Nur Format-Treffer</option>${names.map(n => `<option>${esc(n)}</option>`).join('')}<option value="__none">Kein Format</option>`;
+  if (![...hf.options].some(o => o.value === settings.histFormat)) settings.histFormat = '';
+  hf.value = settings.histFormat;
 }
 function renderDebug(r) {
   const box = $('#debug');
@@ -1130,6 +1198,7 @@ function renderFormats() {
     </div>`).join('') || '<p class="muted small">Noch keine Formate angelegt.</p>';
   updateFormatCounts();
   buildDatalistsSafe();
+  if ($('#formatTarget')) refreshFormatSelects();
 }
 function updateFormatCounts() {
   if (!dbReady) return;
@@ -1145,7 +1214,7 @@ function initFormatsUi() {
   box.addEventListener('change', e => {
     const row = e.target.closest('.format-row'); if (!row || !e.target.dataset.f) return;
     formats[+row.dataset.i][e.target.dataset.f] = e.target.value.trim();
-    saveFormats(); updateFormatCounts(); buildDatalistsSafe(); renderCollection();
+    saveFormats(); updateFormatCounts(); buildDatalistsSafe(); refreshFormatSelects(); renderCollection(); renderHistory();
   });
   box.addEventListener('click', e => {
     if (!e.target.closest('[data-del]')) return;
@@ -1191,18 +1260,24 @@ function init() {
   $('#btnCamera').addEventListener('click', () => (stream ? stopCamera() : startCamera()));
   $('#cameraSelect').addEventListener('change', e => startCamera(e.target.value));
   $('#btnLive').addEventListener('click', () => setLive(!live));
-  $('#btnSnap').addEventListener('click', () => scanOnce(grabFrame()));
-  $('#fileInput').addEventListener('change', async e => {
-    const f = e.target.files[0]; if (!f) return;
-    try {
-      const bmp = await createImageBitmap(f); // berücksichtigt die Drehung von Handyfotos
-      // Das Foto sollte die Karte möglichst formatfüllend zeigen
-      await scanOnce(toCardCanvas(bmp, 0, 0, bmp.width, bmp.height));
-      bmp.close?.();
-    } catch (err) { showBusy('Bild konnte nicht gelesen werden: ' + err.message); }
-    e.target.value = '';
-  });
   video.addEventListener('loadedmetadata', layoutGuide);
+
+  // Format-Suche
+  const fsBox = $('#formatScanBox');
+  $('#formatScan').checked = settings.formatScan;
+  fsBox.classList.toggle('on', settings.formatScan);
+  $('#formatScan').addEventListener('change', e => { settings.formatScan = e.target.checked; fsBox.classList.toggle('on', e.target.checked); saveSettings(); ensureAudio(); });
+  $('#formatTarget').addEventListener('change', e => { settings.formatTarget = e.target.value; saveSettings(); renderHistory(); });
+
+  // Filter der letzten Scans
+  $('#histCat').value = settings.histCat;
+  $('#histCat').addEventListener('change', e => { settings.histCat = e.target.value; saveSettings(); renderHistory(); });
+  $('#histFormat').addEventListener('change', e => { settings.histFormat = e.target.value; saveSettings(); renderHistory(); });
+  $('#histClear').addEventListener('click', () => { if (confirm('Liste der letzten Scans leeren? (Die Sammlung bleibt erhalten.)')) { history = []; saveHistory(); renderHistory(); } });
+  refreshFormatSelects();
+  // auf großen Bildschirmen aufgeklappt, auf dem Handy eingeklappt
+  $('#manualBox').open = window.innerWidth > 820;
+  $('#collOptions').open = window.innerWidth > 820;
   bindSearch($('#manualSearch'), $('#manualResults'), c => { accept(c, null, { via: 'manuell' }); $('#manualSearch').value = ''; $('#manualResults').innerHTML = ''; });
   $('#debug').hidden = !settings.debug;
 
