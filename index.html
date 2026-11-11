@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#14161c">
 <title>YGO Karten-Sortierer</title>
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="style.css?v=4">
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
@@ -36,6 +36,7 @@
       <option value="name">Nur Kartenname</option>
     </select>
     <select id="cameraSelect" title="Kamera wählen" hidden></select>
+    <button id="btnEditRegions" title="Lesebereiche und Rahmengröße anpassen">✎ Bereiche</button>
     <div class="format-scan" id="formatScanBox">
       <label class="chk"><input type="checkbox" id="formatScan"> 🎯 Format-Suche</label>
       <select id="formatTarget" title="Gesuchtes Format"></select>
@@ -48,14 +49,27 @@
         <div class="video-box" id="videoBox" hidden>
           <video id="video" playsinline muted></video>
           <div id="guide" hidden>
+            <canvas id="freezeFrame" hidden></canvas>
             <div class="region" data-r="name"></div>
+            <div class="region" data-r="stars"></div>
             <div class="region" data-r="code"></div>
             <div class="region" data-r="codePend"></div>
+            <div class="region" data-r="atk"></div>
           </div>
         </div>
         <div id="cameraHint">Tippe auf „Kamera starten“ – der Live-Scan beginnt sofort.<br>Karte so in den Rahmen halten, dass sie ihn ausfüllt.</div>
         <div id="liveIndicator" hidden></div>
         <div id="formatBadge" hidden></div>
+      </div>
+      <div id="regionEditor" class="region-editor" hidden>
+        <div class="re-hint small">Karte in den Rahmen halten, dann <b>✎ Standbild</b> drücken. Bereiche mit dem Finger <b>verschieben</b>, am ◢ die <b>Größe ändern</b>. Der weiße Rahmen sollte genau am Kartenrand liegen.</div>
+        <div class="re-bar">
+          <label>Rahmengröße <input type="range" id="guideScale" min="55" max="96" step="1"></label>
+          <button id="reFreeze" class="small">✎ Standbild</button>
+          <button id="reSave" class="primary small">✓ Speichern</button>
+          <button id="reReset" class="small">Standard</button>
+          <button id="reCancel" class="small">Abbrechen</button>
+        </div>
       </div>
       <p class="muted small tip">Tipp: Gute, blendfreie Beleuchtung und dunkler Untergrund helfen. Der Set-Code (unter dem Bild rechts, bei Pendel links unten) wird am zuverlässigsten erkannt.</p>
     </div>
@@ -165,6 +179,14 @@
     </label>
     <label>Mindest-Ähnlichkeit beim Namensvergleich (0.5–1) <input type="number" data-set="minScore" min="0.5" max="1" step="0.01"></label>
 
+    <h2>Erkennung absichern</h2>
+    <label class="chk"><input type="checkbox" data-set="checkFrame"> Nur scannen, wenn eine Karte im Rahmen liegt (Rahmenfarbe + Textbox prüfen)</label>
+    <label class="chk"><input type="checkbox" data-set="useAtk"> ATK/DEF lesen und mit der Karte vergleichen</label>
+    <label class="chk"><input type="checkbox" data-set="useStars"> Stufen-Sterne zählen und vergleichen</label>
+    <p class="muted small">Die Rahmenfarbe (z. B. Fusion = lila, Falle = magenta) wird immer mit der erkannten Karte verglichen.
+      Passen die Merkmale nicht, wird die Karte abgelehnt oder ein besser passender Kandidat gewählt.</p>
+    <button id="btnOpenRegions">✎ Lesebereiche &amp; Rahmengröße anpassen</button>
+
     <h2>Reaktion</h2>
     <label class="chk"><input type="checkbox" data-set="sound"> Ton abspielen</label>
     <label class="chk"><input type="checkbox" data-set="speech"> Stapelnamen ansagen (Sprachausgabe)</label>
@@ -179,6 +201,6 @@
 </section>
 </main>
 
-<script src="app.js?v=3"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>

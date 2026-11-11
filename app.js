@@ -44,6 +44,7 @@ const DEFAULT_SETTINGS = {
   sound: true, speech: true, vibrate: true, addToCollection: true, ignoreUnmatched: false,
   defaultPile: 'Rest', debug: false,
   formatScan: false, formatTarget: 'GOAT', histCat: '', histFormat: '',
+  checkFrame: true, useAtk: true, useStars: true, guideScale: 0.88, regions: {},
 };
 const settings = { ...DEFAULT_SETTINGS, ...LS.get('settings', {}) };
 const saveSettings = () => LS.set('settings', settings);
@@ -266,9 +267,10 @@ function compact(c, nd) {
     d: c.misc_info?.[0]?.tcg_date || '',   // erste Veröffentlichung TCG (Europa/USA)
     do: c.misc_info?.[0]?.ocg_date || '',  // erste Veröffentlichung OCG (Japan)
     s: (c.card_sets || []).map(s => [s.set_code, s.set_name, s.set_rarity]),
+    alt: (c.card_images || []).map(i => i.id).filter(id => id !== c.id), // weitere Artwork-IDs
   };
 }
-const DB_VERSION = 2; // erhöhen, wenn sich das gespeicherte Kartenformat ändert
+const DB_VERSION = 3; // erhöhen, wenn sich das gespeicherte Kartenformat ändert
 function normName(s) {
   return String(s).toLowerCase()
     .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
@@ -282,12 +284,13 @@ function normCode(code) {
 function buildIndex(cards) {
   CARDS = cards;
   byId = new Map(cards.map(c => [c.id, c]));
+  for (const c of cards) for (const a of c.alt || []) if (!byId.has(a)) byId.set(a, c);
   codeIndex = new Map();
   nameIndex = [];
   for (const c of cards) {
     const same = !c.nd || normName(c.nd) === normName(c.n);
-    nameIndex.push({ norm: normName(c.n), card: c, lang: same ? '' : 'Englisch' });
-    if (!same) nameIndex.push({ norm: normName(c.nd), card: c, lang: 'Deutsch' });
+    nameIndex.push({ norm: normName(c.n), loose: normLoose(c.n), card: c, lang: same ? '' : 'Englisch' });
+    if (!same) nameIndex.push({ norm: normName(c.nd), loose: normLoose(c.nd), card: c, lang: 'Deutsch' });
     for (const [code, setName, rarity] of c.s) {
       const k = normCode(code);
       if (!k) continue;
@@ -313,9 +316,10 @@ async function loadDb(force = false) {
       try {
         setDbStatus('Lade deutsche Kartennamen…');
         const de = await (await fetch(API + '?language=de')).json();
-        for (const c of de.data || []) deNames[c.id] = c.name;
+        // über ALLE Artwork-IDs zuordnen: die Haupt-ID kann zwischen EN- und DE-Liste abweichen
+        for (const c of de.data || []) for (const id of [c.id, ...(c.card_images || []).map(i => i.id)]) deNames[id] ??= c.name;
       } catch (e) { console.warn('Deutsche Namen nicht geladen', e); }
-      data = { v: DB_VERSION, date: Date.now(), cards: en.data.map(c => compact(c, deNames[c.id])) };
+      data = { v: DB_VERSION, date: Date.now(), cards: en.data.map(c => compact(c, deNames[c.id] ?? (c.card_images || []).map(i => deNames[i.id]).find(Boolean))) };
       await idbSet('db', data);
     }
     buildIndex(data.cards);
@@ -349,16 +353,19 @@ function lev(a, b, max) {
   }
   return prev[lb];
 }
+// Für den Vergleich mit OCR-Text: Umlaute vereinheitlichen (OCR liest "ä" mal als "a", mal als "ä")
+const normLoose = s => normName(s).replace(/ae/g, 'a').replace(/oe/g, 'o').replace(/ue/g, 'u').replace(/ss/g, 's');
 function fuzzyName(text, k = 5) {
   const lines = String(text).split('\n').map(s => s.trim()).filter(Boolean).sort((a, b) => b.length - a.length);
-  const q = normName(lines[0] || '');
+  // einzelne Zeichen am Ende (z.B. das Attribut-Symbol) abschneiden
+  const q = normLoose((lines[0] || '').replace(/\s+\S{1,2}$/, ''));
   if (q.length < 3) return [];
   const scores = new Map();
   for (const e of nameIndex) {
-    const L = Math.max(q.length, e.norm.length);
+    const L = Math.max(q.length, e.loose.length);
     const maxD = Math.floor(L * 0.45);
-    if (Math.abs(q.length - e.norm.length) > maxD) continue;
-    const d = lev(q, e.norm, maxD);
+    if (Math.abs(q.length - e.loose.length) > maxD) continue;
+    const d = lev(q, e.loose, maxD);
     if (d > maxD) continue;
     const score = 1 - d / L;
     if (!(scores.get(e.card.id)?.score >= score)) scores.set(e.card.id, { score, lang: e.lang });
@@ -433,12 +440,20 @@ function findByCode(text) {
 }
 
 /* ------------------------------------------------------- OCR / Kamera */
-// Lage der Textbereiche auf der Karte (Anteile von Breite/Höhe)
-const REGIONS = {
-  name: { x: 0.065, y: 0.040, w: 0.75, h: 0.075 },
-  code: { x: 0.55, y: 0.712, w: 0.40, h: 0.046 },      // Set-Code unter dem Bild (rechts)
-  codePend: { x: 0.05, y: 0.898, w: 0.40, h: 0.046 },  // Set-Code bei Pendelmonstern (links unten)
+// Lage der Lesebereiche auf der Karte (Anteile von Breite/Höhe). In der App verschiebbar.
+const DEFAULT_REGIONS = {
+  name: { x: 0.065, y: 0.040, w: 0.75, h: 0.075 },      // Kartenname
+  stars: { x: 0.08, y: 0.118, w: 0.84, h: 0.05 },       // Stufen-Sterne
+  code: { x: 0.55, y: 0.712, w: 0.40, h: 0.046 },       // Set-Code unter dem Bild (rechts)
+  codePend: { x: 0.05, y: 0.898, w: 0.40, h: 0.046 },   // Set-Code bei Pendelmonstern (links unten)
+  atk: { x: 0.50, y: 0.902, w: 0.45, h: 0.038 },        // ATK/DEF-Zeile
 };
+const REGION_LABELS = { name: 'Name', stars: 'Sterne', code: 'Set-Code', codePend: 'Set-Code (Pendel)', atk: 'ATK/DEF' };
+const REGIONS = {};
+function loadRegions() {
+  for (const [k, r] of Object.entries(DEFAULT_REGIONS)) REGIONS[k] = { ...r, ...(settings.regions?.[k] || {}) };
+}
+loadRegions();
 // Innerhalb eines Code-Bereichs werden mehrere schmale Streifen gelesen –
 // ein schmaler Streifen ohne Bildkanten liest Tesseract deutlich besser.
 function codeStrips(r) {
@@ -452,10 +467,11 @@ function getWorker(kind) {
   if (!workers[kind]) {
     workers[kind] = (async () => {
       // Namen immer mit deutschem UND englischem Modell lesen -> DE- und EN-Karten werden erkannt
-      const langs = kind === 'code' ? 'eng' : 'deu+eng';
+      const langs = kind === 'name' ? 'deu+eng' : 'eng';
       const w = await Tesseract.createWorker(langs, 1);
       const params = { tessedit_pageseg_mode: '7' }; // eine Textzeile
       if (kind === 'code') params.tessedit_char_whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-';
+      if (kind === 'atk') params.tessedit_char_whitelist = 'ATKDEFLIN/0123456789?-';
       await w.setParameters(params);
       return w;
     })();
@@ -464,8 +480,9 @@ function getWorker(kind) {
 }
 
 function guideRect(sw, sh) {
-  let h = sh * 0.88, w = (h * 59) / 86;
-  if (w > sw * 0.9) { w = sw * 0.9; h = (w * 86) / 59; }
+  const scale = settings.guideScale || 0.88;
+  let h = sh * scale, w = (h * 59) / 86;
+  if (w > sw * Math.min(0.98, scale + 0.02)) { w = sw * Math.min(0.98, scale + 0.02); h = (w * 86) / 59; }
   return { x: (sw - w) / 2, y: (sh - h) / 2, w, h };
 }
 function toCardCanvas(src, sx, sy, sw, sh) {
@@ -473,7 +490,7 @@ function toCardCanvas(src, sx, sy, sw, sh) {
   const H = Math.round(Math.max(CARD_H, Math.min(2400, sh)));
   const c = document.createElement('canvas');
   c.width = Math.round((H * CARD_W) / CARD_H); c.height = H;
-  const ctx = c.getContext('2d');
+  const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
   return c;
@@ -508,8 +525,145 @@ function regionCanvas(card, r, targetH) {
   return c;
 }
 
+/* ---------------------------------------------- Kartenprüfung über Bildmerkmale */
+function rgb2hsv(r, g, b) {
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d) {
+    if (mx === r) h = ((g - b) / d) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4;
+    h *= 60; if (h < 0) h += 360;
+  }
+  return { h, s: mx ? d / mx : 0, v: mx / 255 };
+}
+function areaStats(card, r) {
+  const ctx = card.getContext('2d', { willReadFrequently: true });
+  const x = Math.round(r.x * card.width), y = Math.round(r.y * card.height);
+  const w = Math.max(1, Math.round(r.w * card.width)), h = Math.max(1, Math.round(r.h * card.height));
+  const d = ctx.getImageData(x, y, w, h).data;
+  let R = 0, G = 0, B = 0, n = 0;
+  for (let i = 0; i < d.length; i += 16) { R += d[i]; G += d[i + 1]; B += d[i + 2]; n++; } // jedes 4. Pixel reicht
+  return { rgb: [R / n, G / n, B / n], ...rgb2hsv(R / n, G / n, B / n) };
+}
+// Weißabgleich: die helle Textbox hat auf Originalkarten ungefähr diese Farbe
+const TEXTBOX_REF = [216, 204, 192];
+const balanced = (st, gains) => { const [r, g, b] = st.rgb.map((v, i) => Math.min(255, v * gains[i])); return { rgb: [r, g, b], ...rgb2hsv(r, g, b) }; };
+const hueDiff = (a, b) => { const d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; };
+// Rahmenfarbe -> Kartentyp (kalibriert an Originalkarten)
+function frameClass(c) {
+  if (c.v < 0.33) return 'xyz';
+  if (c.s < 0.16) return c.v > 0.5 ? 'synchro' : 'xyz';
+  const h = c.h;
+  if (h < 27 || h >= 350) return 'effect';
+  if (h < 60) return 'normal';
+  if (h >= 140 && h < 200) return 'spell';
+  if (h >= 200 && h < 250) return c.s > 0.6 && c.v < 0.45 ? 'link' : 'ritual';
+  if (h >= 250 && h < 300) return 'fusion';
+  if (h >= 300 && h < 350) return 'trap';
+  return '';
+}
+const FRAME_NAMES = { normal: 'Normal (gelb)', effect: 'Effekt (orange)', ritual: 'Ritual (blau)', fusion: 'Fusion (lila)', synchro: 'Synchro (weiß)',
+  xyz: 'Xyz (schwarz)', link: 'Link (dunkelblau)', spell: 'Zauber (grün)', trap: 'Falle (magenta)', token: 'Token' };
+// ähnliche Farben, die bei Kunstlicht verwechselt werden können -> keine Strafe
+const FRAME_NEAR = { normal: ['effect'], effect: ['normal'], ritual: ['link'], link: ['ritual', 'xyz'], xyz: ['link', 'synchro'], synchro: ['xyz', 'token'], fusion: ['trap'], trap: ['fusion'], token: ['synchro'] };
+function expectedFrame(card) {
+  const f = (card.f || '').replace('_pendulum', '');
+  if (f === 'skill') return '';
+  return f;
+}
+// Liegt überhaupt eine Karte im Rahmen? Seitenstreifen links/rechts gleichfarbig + helle Textbox unten
+function analyzeCard(card) {
+  // Streifen etwas innerhalb der Kartenkante (die Kante selbst ist dunkel abgesetzt)
+  const T0 = areaStats(card, { x: 0.10, y: 0.78, w: 0.80, h: 0.10 });
+  const textBox = T0.s < 0.45 && T0.v > 0.45; // hell und fast farblos (auch unter warmem Licht)
+  // Farbstich des Raumlichts über die Textbox herausrechnen (nur wenn sie plausibel ist)
+  const gains = textBox ? TEXTBOX_REF.map((ref, i) => Math.max(0.6, Math.min(1.8, ref / Math.max(1, T0.rgb[i])))) : [1, 1, 1];
+  const L = balanced(areaStats(card, { x: 0.03, y: 0.18, w: 0.025, h: 0.37 }), gains);
+  const Rr = balanced(areaStats(card, { x: 0.945, y: 0.18, w: 0.025, h: 0.37 }), gains);
+  const sidesMatch = Math.abs(L.v - Rr.v) < 0.3 && (hueDiff(L.h, Rr.h) < 45 || Math.min(L.s, Rr.s) < 0.18);
+  const avg = { h: Rr.s > L.s ? Rr.h : L.h, s: (L.s + Rr.s) / 2, v: (L.v + Rr.v) / 2 };
+  return { present: sidesMatch && textBox, sidesMatch, textBox, cls: sidesMatch ? frameClass(avg) : '', color: avg, gains };
+}
+// Stufen-Sterne zählen: rote Kreise in der Sterne-Zeile
+function countStars(card, gains = [1, 1, 1]) {
+  const r = REGIONS.stars;
+  const W = 420, H = Math.max(8, Math.round((W * r.h * card.height) / (r.w * card.width)));
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(card, r.x * card.width, r.y * card.height, r.w * card.width, r.h * card.height, 0, 0, W, H);
+  const d = ctx.getImageData(0, 0, W, H).data;
+  const px = [];
+  const bins = new Uint32Array(60);
+  for (let i = 0; i < d.length; i += 4) {
+    const p = rgb2hsv(Math.min(255, d[i] * gains[0]), Math.min(255, d[i + 1] * gains[1]), Math.min(255, d[i + 2] * gains[2]));
+    px.push(p);
+    if (p.s > 0.45 && p.v > 0.35) bins[Math.floor(p.h / 6) % 60]++;
+  }
+  // Rahmenfarbe der Zeile (häufigster Farbton). Ist sie selbst rötlich-orange (Effektmonster),
+  // müssen Sterne deutlich röter sein als der Rahmen.
+  const top = Math.max(...bins), frameHue = bins.indexOf(top) * 6 + 3;
+  const frameDominates = top > px.length * 0.3;
+  const redMax = frameDominates && frameHue >= 14 && frameHue < 32 ? Math.min(14, frameHue - 7) : 14;
+  const col = new Float32Array(W);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const p = px[y * W + x];
+    if ((p.h < redMax || p.h > 340) && p.s > 0.5 && p.v > 0.35) col[x]++;
+  }
+  const starW = (0.052 / r.w) * W; // Breite eines Sterns in Pixeln dieses Ausschnitts
+  let count = 0, run = 0, gap = 0;
+  const flush = () => { if (run > starW * 0.45) count += Math.max(1, Math.round(run / (starW * 1.02))); run = 0; };
+  for (let x = 0; x < W; x++) {
+    if (col[x] / H > 0.1) { run += 1 + gap; gap = 0; }
+    else if (run && gap < starW * 0.12) gap++;
+    else { flush(); gap = 0; }
+  }
+  flush();
+  return count <= 13 ? count : 0;
+}
+// ATK/DEF aus der OCR-Zeile lesen ("ATK/1800 DEF/1600", "ATK/2300 LINK-2")
+function parseAtkDef(text) {
+  const t = String(text).toUpperCase().replace(/\s+/g, ' ');
+  const num = s => { const v = [...s].map(ch => DIGIT_FIX[ch] ?? ch).join(''); return /^\d{1,4}$/.test(v) ? +v : null; };
+  const a = t.match(/A?T?K\s*\/?\s*([0-9OQDILTJZSBG?]{1,4})/);
+  const df = t.match(/D?E?F\s*\/?\s*([0-9OQDILTJZSBG?]{1,4})/);
+  let atk = a ? num(a[1]) : null, def = df ? num(df[1]) : null;
+  if (atk === null && def === null) { const ns = t.match(/\d{3,4}/g) || []; if (ns.length >= 2) { atk = +ns[0]; def = +ns[1]; } }
+  return { atk, def };
+}
+// Kandidaten mit allen Merkmalen bewerten
+function verifyCandidate(cand, cues) {
+  const c = cand.card, why = [];
+  let s = cand.score;
+  const exp = expectedFrame(c);
+  if (cues.frame && exp) {
+    if (exp === cues.frame) { s += 0.08; why.push('Rahmen ✓'); }
+    else if (!(FRAME_NEAR[exp] || []).includes(cues.frame)) { s -= 0.22; why.push('Rahmen ✗'); }
+  }
+  const mon = isMonster(c);
+  if (cues.atk != null) {
+    if (!mon) { s -= 0.12; why.push('ATK bei Zauber/Falle ✗'); }
+    else if (c.atk === cues.atk) { s += 0.12; why.push('ATK ✓'); }
+    else { s -= 0.15; why.push('ATK ✗'); }
+  }
+  if (cues.def != null && mon && c.def != null) {
+    if (c.def === cues.def) { s += 0.06; why.push('DEF ✓'); } else { s -= 0.08; why.push('DEF ✗'); }
+  }
+  if (cues.stars && mon && !/xyz|link/.test(c.f || '') && c.l != null) {
+    // ±1 Stern tolerieren (Spiegelungen / Unschärfe)
+    if (c.l === cues.stars) { s += 0.07; why.push('Sterne ✓'); }
+    else if (Math.abs(c.l - cues.stars) >= 2) { s -= 0.08; why.push('Sterne ✗'); }
+  }
+  return { ...cand, final: s, why };
+}
+
 async function recognizeCard(card, mode) {
-  const out = { codeText: '', nameText: '', match: null, candidates: [], crops: [] };
+  const out = { codeText: '', nameText: '', atkText: '', match: null, candidates: [], crops: [], cues: {} };
+  const fr = analyzeCard(card);
+  out.frame = fr;
+  out.cues.frame = fr.cls;
+  // 1) Keine Karte im Rahmen -> gar nicht erst lesen (verhindert Fehlerkennungen)
+  if (settings.checkFrame && !fr.present) { out.noCard = true; return out; }
+
+  // 2) Set-Code (eindeutig)
   if (mode !== 'name') {
     const w = await getWorker('code');
     search: for (const key of ['code', 'codePend']) {
@@ -520,19 +674,43 @@ async function recognizeCard(card, mode) {
         const txt = data.text.trim();
         if (txt) out.codeText += (out.codeText ? ' | ' : '') + txt;
         const hit = findByCode(data.text);
-        if (hit) { out.match = { ...hit, via: 'Set-Code', score: 1 }; break search; }
+        if (!hit) continue;
+        // Gegenprobe Rahmenfarbe: ein "Code" auf einer Karte mit ganz anderer Farbe ist ein Lesefehler
+        const exp = expectedFrame(hit.card);
+        if (settings.checkFrame && fr.cls && exp && exp !== fr.cls && !(FRAME_NEAR[exp] || []).includes(fr.cls)) {
+          out.codeRejected = `${hit.set.code} passt nicht zur Rahmenfarbe`;
+          continue;
+        }
+        out.match = { ...hit, via: 'Set-Code', score: 1 };
+        break search;
       }
     }
   }
-  if (!out.match && mode !== 'code') {
-    const w = await getWorker('name');
-    const rc = regionCanvas(card, REGIONS.name, 64);
-    out.crops.push(rc);
-    const { data } = await w.recognize(rc);
-    out.nameText = data.text.trim();
-    out.candidates = fuzzyName(out.nameText, 5);
-    const best = out.candidates[0];
-    if (best && best.score >= settings.minScore) out.match = { card: best.card, set: langOnly(best.lang), via: 'Name', score: best.score };
+  if (out.match || mode === 'code') return out;
+
+  // 3) Name + Zusatzmerkmale
+  const w = await getWorker('name');
+  const rc = regionCanvas(card, REGIONS.name, 64);
+  out.crops.push(rc);
+  const { data } = await w.recognize(rc);
+  out.nameText = data.text.trim();
+  let cands = fuzzyName(out.nameText, 8);
+  if (!cands.length) return out;
+  if (settings.useAtk && cands.some(c => isMonster(c.card))) {
+    const arc = regionCanvas(card, REGIONS.atk, 56);
+    out.crops.push(arc);
+    const res = await (await getWorker('atk')).recognize(arc);
+    out.atkText = res.data.text.trim();
+    Object.assign(out.cues, parseAtkDef(out.atkText));
+  }
+  if (settings.useStars) out.cues.stars = countStars(card, fr.gains);
+  cands = cands.map(c => verifyCandidate(c, out.cues)).sort((a, b) => b.final - a.final);
+  out.candidates = cands;
+  const best = cands[0], qlen = normLoose(out.nameText).length;
+  // kurze gelesene Texte sind unsicher -> strengere Schwelle
+  const need = qlen < 7 ? Math.max(0.9, settings.minScore) : settings.minScore;
+  if (best.final >= need && best.score >= 0.6) {
+    out.match = { card: best.card, set: langOnly(best.lang), via: 'Name', score: Math.min(1, best.final) };
   }
   return out;
 }
@@ -572,6 +750,7 @@ async function startCamera(deviceId) {
   setLive(true); // Live-Scan startet direkt mit der Kamera
 }
 function stopCamera() {
+  if (editing) closeRegionEditor(false);
   setLive(false);
   stream?.getTracks().forEach(t => t.stop());
   stream = null;
@@ -595,17 +774,108 @@ function layoutGuide() {
   if (!sw) return;
   const r = guideRect(sw, sh), g = $('#guide');
   Object.assign(g.style, { left: (r.x / sw) * 100 + '%', top: (r.y / sh) * 100 + '%', width: (r.w / sw) * 100 + '%', height: (r.h / sh) * 100 + '%' });
-  for (const el of $$('.region', g)) {
-    const rr = REGIONS[el.dataset.r];
-    Object.assign(el.style, { left: rr.x * 100 + '%', top: rr.y * 100 + '%', width: rr.w * 100 + '%', height: rr.h * 100 + '%' });
-    el.hidden = (settings.scanMode === 'name' && el.dataset.r !== 'name') || (settings.scanMode === 'code' && el.dataset.r === 'name');
-  }
+  const regs = editing ? editRegions : REGIONS, m = settings.scanMode;
+  const active = { name: m !== 'code', code: m !== 'name', codePend: m !== 'name', atk: settings.useAtk && m !== 'code', stars: settings.useStars && m !== 'code' };
+  for (const el of $$('.region', g)) positionRegion(el, regs[el.dataset.r], editing || active[el.dataset.r]);
   g.hidden = false;
+}
+function positionRegion(el, rr, visible = true) {
+  Object.assign(el.style, { left: rr.x * 100 + '%', top: rr.y * 100 + '%', width: rr.w * 100 + '%', height: rr.h * 100 + '%' });
+  el.hidden = !visible;
 }
 function grabFrame() {
   const sw = video.videoWidth, sh = video.videoHeight;
   const r = guideRect(sw, sh);
   return toCardCanvas(video, r.x, r.y, r.w, r.h);
+}
+
+/* ------------------------------------------------------- Lesebereiche einstellen */
+let editing = false, editRegions = null, prevScale = 0.88;
+const clone = o => JSON.parse(JSON.stringify(o));
+async function openRegionEditor() {
+  if (!stream) { await startCamera(); if (!stream) return; }
+  setLive(false);
+  editing = true;
+  editRegions = clone(REGIONS);
+  prevScale = settings.guideScale;
+  $('#guideScale').value = Math.round(settings.guideScale * 100);
+  $('#guide').classList.add('editing');
+  $('#regionEditor').hidden = false;
+  $('#btnLive').hidden = true;
+  $('#liveIndicator').textContent = 'BEREICHE EINSTELLEN';
+  for (const el of $$('#guide .region')) {
+    el.dataset.label = REGION_LABELS[el.dataset.r];
+    if (!el.querySelector('.handle')) el.insertAdjacentHTML('beforeend', '<span class="handle"></span>');
+  }
+  setFrozen(false);
+  layoutGuide();
+  $('#cameraWrap').scrollIntoView({ block: 'nearest' });
+}
+function setFrozen(on) {
+  const fc = $('#freezeFrame');
+  if (on) {
+    const card = grabFrame();
+    fc.width = card.width; fc.height = card.height;
+    fc.getContext('2d').drawImage(card, 0, 0);
+  }
+  fc.hidden = !on;
+  $('#reFreeze').textContent = on ? '▶ Live-Bild' : '✎ Standbild';
+}
+function closeRegionEditor(save) {
+  if (save) {
+    settings.regions = clone(editRegions);
+    saveSettings();
+    loadRegions();
+  } else settings.guideScale = prevScale;
+  saveSettings();
+  editing = false;
+  $('#guide').classList.remove('editing');
+  $('#regionEditor').hidden = true;
+  setFrozen(false);
+  layoutGuide();
+  if (stream) { $('#btnLive').hidden = false; setLive(true); }
+}
+function initRegionEditor() {
+  const g = $('#guide');
+  // Ziehen = verschieben, Ecke ◢ = Größe ändern (Maus und Touch)
+  g.addEventListener('pointerdown', e => {
+    if (!editing) return;
+    const el = e.target.closest('.region');
+    if (!el) return;
+    e.preventDefault();
+    const key = el.dataset.r, resize = e.target.classList.contains('handle');
+    const box = g.getBoundingClientRect(), r0 = { ...editRegions[key] }, sx = e.clientX, sy = e.clientY;
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    el.setPointerCapture(e.pointerId);
+    el.classList.add('active');
+    const move = ev => {
+      const dx = (ev.clientX - sx) / box.width, dy = (ev.clientY - sy) / box.height, r = editRegions[key];
+      if (resize) { r.w = clamp(r0.w + dx, 0.04, 1 - r.x); r.h = clamp(r0.h + dy, 0.015, 1 - r.y); }
+      else { r.x = clamp(r0.x + dx, 0, 1 - r.w); r.y = clamp(r0.y + dy, 0, 1 - r.h); }
+      positionRegion(el, r);
+    };
+    const up = () => { el.classList.remove('active'); el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  });
+  $('#guideScale').addEventListener('input', e => {
+    settings.guideScale = +e.target.value / 100;
+    layoutGuide();
+    if (!$('#freezeFrame').hidden) setFrozen(true);
+  });
+  $('#reFreeze').addEventListener('click', () => setFrozen($('#freezeFrame').hidden));
+  $('#reSave').addEventListener('click', () => closeRegionEditor(true));
+  $('#reCancel').addEventListener('click', () => closeRegionEditor(false));
+  $('#reReset').addEventListener('click', () => {
+    editRegions = clone(DEFAULT_REGIONS);
+    settings.guideScale = DEFAULT_SETTINGS.guideScale;
+    $('#guideScale').value = Math.round(settings.guideScale * 100);
+    layoutGuide();
+    if (!$('#freezeFrame').hidden) setFrozen(true);
+  });
+  $('#btnEditRegions').addEventListener('click', () => (editing ? closeRegionEditor(false) : openRegionEditor()));
+  $('#btnOpenRegions').addEventListener('click', () => { $('nav [data-tab=scan]').click(); openRegionEditor(); });
 }
 
 /* ------------------------------------------------------- Live-Scan */
@@ -638,7 +908,7 @@ async function liveLoop(run) {
         $('#guide').classList.toggle('hit', !!m);
         if (!m) {
           if (++missCount >= 2) { lastAcceptedId = null; pendingId = null; }
-          liveStatus('suche Karte…');
+          liveStatus(r.noCard ? 'keine Karte im Rahmen' : 'suche Karte…');
         } else {
           missCount = 0;
           const id = m.card.id;
@@ -855,7 +1125,7 @@ function renderCandidates(cands, replaceEntry, thumb) {
   if (!cands?.length) { box.innerHTML = ''; return; }
   // eingeklappt, damit es auf dem Handy keinen Platz kostet
   box.innerHTML = `<details><summary class="muted small">Falsche Karte? ${cands.length} Alternativen</summary><div class="list">${cands.map((c, i) =>
-    `<button data-i="${i}"><span>${esc(displayName(c.card))}</span><span class="muted small">${Math.round(c.score * 100)} %</span></button>`).join('')}</div></details>`;
+    `<button data-i="${i}"><span>${esc(displayName(c.card))}</span><span class="muted small">${Math.round(Math.min(1, c.final ?? c.score) * 100)} %</span></button>`).join('')}</div></details>`;
   $$('button', box).forEach(b => b.addEventListener('click', () => {
     if (replaceEntry) undo(replaceEntry);
     const cand = cands[+b.dataset.i];
@@ -907,7 +1177,13 @@ function renderDebug(r) {
   const box = $('#debug');
   box.hidden = !settings.debug;
   if (!settings.debug) return;
-  box.innerHTML = `<b>OCR</b> · Code: <code>${esc(r.codeText || '–')}</code> · Name: <code>${esc(r.nameText || '–')}</code>`;
+  const fr = r.frame || {}, cu = r.cues || {};
+  box.innerHTML = `<div><b>Karte im Rahmen:</b> ${fr.present ? '✓' : '✗'} (Seiten gleichfarbig ${fr.sidesMatch ? '✓' : '✗'}, helle Textbox ${fr.textBox ? '✓' : '✗'})
+      · Rahmenfarbe: <b>${esc(FRAME_NAMES[fr.cls] || '–')}</b></div>
+    <div><b>Code:</b> <code>${esc(r.codeText || '–')}</code>${r.codeRejected ? ` <span class="muted">(${esc(r.codeRejected)})</span>` : ''}
+      · <b>Name:</b> <code>${esc(r.nameText || '–')}</code> · <b>ATK/DEF:</b> <code>${esc(r.atkText || '–')}</code>
+      → ${cu.atk ?? '–'}/${cu.def ?? '–'} · <b>Sterne:</b> ${cu.stars ?? '–'}</div>
+    ${(r.candidates || []).slice(0, 4).map(c => `<div class="small">${esc(displayName(c.card))}: Name ${Math.round(c.score * 100)} % → <b>${Math.round((c.final ?? c.score) * 100)} %</b> ${esc((c.why || []).join(' '))}</div>`).join('')}`;
   r.crops.forEach(c => box.appendChild(c));
 }
 
@@ -1241,6 +1517,7 @@ function initSettingsUi() {
       saveSettings();
       if (k === 'lang') { renderCollection(); renderHistory(); }
       if (k === 'debug') $('#debug').hidden = !v;
+      if (k === 'useAtk' || k === 'useStars') layoutGuide();
     });
   }
   $('#btnReloadDb').addEventListener('click', () => { if (confirm('Kartendatenbank neu herunterladen (z.B. für neue Sets und aktuelle Preise)?')) loadDb(true); });
@@ -1308,9 +1585,10 @@ function init() {
   initCollectionUi();
   initFormatsUi();
   initSettingsUi();
+  initRegionEditor();
   renderHistory();
   loadDb();
   // OCR-Engine schon mal vorwärmen
-  if (window.Tesseract) { getWorker('code'); getWorker('name'); }
+  if (window.Tesseract) { getWorker('code'); getWorker('name'); getWorker('atk'); }
 }
 init();

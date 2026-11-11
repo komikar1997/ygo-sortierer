@@ -21,4 +21,6 @@ Handy-Browser erlauben die Kamera nur über **HTTPS** – am Handy daher den Onl
 - **Erstveröffentlichung:** erstes Erscheinen im TCG (Europa/USA), zusätzlich OCG (Japan).
 - **Spielformate** (Tab „Regeln“): Zeitraum je Format, z. B. GOAT 01.01.2002–05.08.2005. Eine Karte gehört dazu, wenn ihre TCG-Erstveröffentlichung im Zeitraum liegt.
 - **Sammlung:** Spalten frei wählbar, bis zu 3 Sortierstufen, Gruppieren, CSV-Export, JSON-Backup.
-- **Erkennung klappt nicht?** Einstellungen → „OCR-Ausschnitte anzeigen“ zeigt, was die Kamera liest.
+- **Abgesicherte Erkennung:** Gescannt wird nur, wenn eine Karte im Rahmen liegt (gleichfarbiger Kartenrahmen links/rechts + helle Textbox). Zusätzlich werden Rahmenfarbe (Normal/Effekt/Fusion/Zauber/Falle …), ATK/DEF und Stufen-Sterne mit dem Kandidaten verglichen. Ein Weißabgleich über die Textbox gleicht Raumlicht aus. Alles in den Einstellungen abschaltbar.
+- **✎ Bereiche:** Rahmengröße und Lesebereiche (Name, Sterne, Set-Code, Pendel-Code, ATK/DEF) per Finger verschieben/vergrößern – am besten mit „Standbild“ einer echten Karte.
+- **Erkennung klappt nicht?** Einstellungen → „OCR-Ausschnitte anzeigen“ zeigt Rahmenfarbe, gelesene Texte, ATK/DEF, Sterne und die Bewertung der Kandidaten.

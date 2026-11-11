@@ -60,6 +60,24 @@ label.chk { cursor: pointer; }
 #guide { position: absolute; border: 3px solid #ffffffd0; border-radius: 10px; box-shadow: 0 0 0 9999px #00000070; pointer-events: none; transition: border-color .2s; }
 #guide.hit { border-color: #1fe39a; }
 #guide .region { position: absolute; border: 1.5px dashed #ffd84d; border-radius: 3px; }
+#guide .region[data-r=stars] { border-color: #ff6b6b; }
+#guide .region[data-r=atk] { border-color: #ffa94d; }
+#guide .region[data-r^=code] { border-color: #4dd9ff; }
+#freezeFrame { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 8px; }
+/* Bearbeiten-Modus: Bereiche greifbar machen */
+#guide.editing { pointer-events: auto; border-color: #fff; }
+#guide.editing .region { pointer-events: auto; touch-action: none; cursor: move; border-width: 2px; border-style: solid; background: #ffffff14; }
+#guide.editing .region.active { background: #ffffff33; }
+#guide.editing .region::before { content: attr(data-label); position: absolute; left: 0; top: -1.35em; font-size: 11px; line-height: 1.3; font-weight: 700;
+  background: #000c; color: #fff; padding: 0 4px; border-radius: 3px; white-space: nowrap; }
+#guide .handle { display: none; }
+#guide.editing .handle { display: block; position: absolute; right: -9px; bottom: -9px; width: 20px; height: 20px; border-radius: 4px;
+  background: #fff; box-shadow: 0 0 0 2px #000a; cursor: nwse-resize; }
+#guide.editing .handle::after { content: "◢"; position: absolute; inset: 0; display: grid; place-items: center; color: #000; font-size: 12px; line-height: 1; }
+.region-editor { margin-top: 8px; background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; padding: 8px 10px; }
+.re-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.re-bar label { flex: 1 1 180px; }
+.re-bar input[type=range] { flex: 1; }
 #liveIndicator { position: absolute; left: 8px; top: 8px; background: #000a; padding: 3px 10px; border-radius: 20px; font-size: .85em; line-height: 1.4; }
 #liveIndicator::before { content: "●"; color: #ff4d4d; margin-right: 6px; animation: blink 1s infinite; }
 #liveIndicator.paused::before { content: "❚❚"; color: #ffd84d; animation: none; }
