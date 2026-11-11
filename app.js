@@ -57,6 +57,11 @@ const RACE_DE = {
 };
 const ST_DE = { Normal: 'Normal', Field: 'Feld', Equip: 'Ausrüstung', Continuous: 'Permanent', 'Quick-Play': 'Schnell', Ritual: 'Ritual', Counter: 'Konter' };
 const FRAME_DE = { normal: 'Normal', effect: 'Effekt', ritual: 'Ritual', fusion: 'Fusion', synchro: 'Synchro', xyz: 'Xyz', link: 'Link', token: 'Token' };
+// Länderkürzel im Set-Code -> Sprache der Karte ("LOB-001" ohne Kürzel = alte US-Erstauflage)
+const REGION_LANG = { '': 'Englisch', EN: 'Englisch', E: 'Englisch', DE: 'Deutsch', G: 'Deutsch', FR: 'Französisch', F: 'Französisch',
+  IT: 'Italienisch', I: 'Italienisch', PT: 'Portugiesisch', P: 'Portugiesisch', SP: 'Spanisch', ES: 'Spanisch', S: 'Spanisch' };
+const LANG_REGION = { Englisch: 'EN', Deutsch: 'DE', Französisch: 'FR', Italienisch: 'IT', Portugiesisch: 'PT', Spanisch: 'SP' };
+const LANGS = Object.keys(LANG_REGION);
 const BAN_DE = { Banned: 'Verboten', Limited: 'Limitiert', 'Semi-Limited': 'Semi-Limitiert' };
 
 function category(c) {
@@ -82,8 +87,31 @@ function deckOf(c) {
 }
 const displayName = c => (settings.lang === 'de' && c.nd ? c.nd : c.n);
 
+/* ------------------------------------------------- Datum & Spielformate */
+// "2002-03-08" -> "08.03.2002"
+const fmtDate = iso => (iso ? iso.split('-').reverse().join('.') : '');
+// Eingabe "05.08.2005", "2005-08-05" oder "2005" -> "2005-08-05" / "2005-01-01"
+function parseDate(s) {
+  s = String(s || '').trim();
+  let m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/))) return s;
+  if ((m = s.match(/^(\d{4})$/))) return `${m[1]}-01-01`;
+  return '';
+}
+// Spielformate: Karte gehört dazu, wenn ihre Erstveröffentlichung (TCG) im Zeitraum liegt
+const DEFAULT_FORMATS = [{ id: 'goat', name: 'GOAT', from: '2002-01-01', to: '2005-08-05' }];
+let formats = LS.get('formats', null) || DEFAULT_FORMATS.map(f => ({ ...f }));
+const saveFormats = () => LS.set('formats', formats);
+function formatsOf(c) {
+  const d = c.d;
+  if (!d) return [];
+  return formats.filter(f => f.name && (!f.from || d >= f.from) && (!f.to || d <= f.to)).map(f => f.name);
+}
+
 /* ------------------------------------------------- Felder für Regeln */
-// c = Karte, s = Druck {code, name, rarities[]} oder null (wenn nur über Namen erkannt)
+// c = Karte, s = Druck {code, name, rarities[], lang} (code leer, wenn nur über den Namen erkannt)
+const langOnly = lang => ({ code: '', name: '', rarities: [], lang: lang || '' });
 const FIELDS = {
   kategorie: { label: 'Kategorie', get: c => category(c), values: ['Monster', 'Zauber', 'Falle', 'Token', 'Skill'] },
   monsterart: { label: 'Monster-Art', get: c => monsterArt(c), values: ['Normal', 'Effekt', 'Ritual', 'Fusion', 'Synchro', 'Xyz', 'Link', 'Pendel'] },
@@ -101,7 +129,15 @@ const FIELDS = {
   setname: { label: 'Set-Name', get: (c, s) => s?.name || '' },
   seltenheit: { label: 'Seltenheit', get: (c, s) => (s?.rarities || []).join(' / ') },
   banlist: { label: 'Banlist (TCG)', get: c => BAN_DE[c.b] || 'Unbegrenzt', values: ['Verboten', 'Limitiert', 'Semi-Limitiert', 'Unbegrenzt'] },
+  erstdruck: { label: 'Erstveröffentlichung (TCG)', date: true, get: c => c.d || '' },
+  erstdruckOcg: { label: 'Erstveröffentlichung (OCG/Japan)', date: true, get: c => c.do || '' },
+  jahr: { label: 'Erscheinungsjahr (TCG)', num: true, get: c => (c.d ? +c.d.slice(0, 4) : '') },
+  format: { label: 'Spielformat', get: c => formatsOf(c)[0] || '', values: () => formats.map(f => f.name) },
+  formate: { label: 'Alle passenden Formate', multi: true, get: c => formatsOf(c).join(', '), values: () => formats.map(f => f.name) },
+  sprache: { label: 'Sprache der Karte', get: (c, s) => s?.lang || '', values: LANGS },
 };
+// Anzeigewert eines Feldes (Datum deutsch formatiert)
+const showField = (k, c, s) => { const f = FIELDS[k], v = f.get(c, s); return f.date ? fmtDate(v) : v; };
 const OPS = { eq: '=', ne: '≠', contains: 'enthält', starts: 'beginnt mit', gt: '>', ge: '≥', lt: '<', le: '≤', empty: 'ist leer', notempty: 'ist nicht leer' };
 
 function testCond(cond, c, s) {
@@ -112,6 +148,22 @@ function testCond(cond, c, s) {
   const opts = String(cond.value ?? '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
   const n = Number(String(cond.value).replace(',', '.'));
   const has = v !== '' && v !== null && v !== undefined;
+  if (f.date) { // Datumsvergleich: Eingabe als TT.MM.JJJJ oder JJJJ
+    const ds = opts.map(parseDate).filter(Boolean), d0 = ds[0] || '';
+    switch (cond.op) {
+      case 'eq': return has && ds.includes(v);
+      case 'ne': return !(has && ds.includes(v));
+      case 'gt': return has && !!d0 && v > d0;
+      case 'ge': return has && !!d0 && v >= d0;
+      case 'lt': return has && !!d0 && v < d0;
+      case 'le': return has && !!d0 && v <= d0;
+    }
+  }
+  if (f.multi && (cond.op === 'eq' || cond.op === 'ne')) { // z.B. "Alle passenden Formate" = GOAT
+    const parts = sv.split(',').map(x => x.trim());
+    const hit = opts.some(o => parts.includes(o));
+    return cond.op === 'eq' ? hit : !hit;
+  }
   switch (cond.op) {
     case 'eq': return f.num ? has && Number(v) === n : opts.some(o => sv === o);
     case 'ne': return f.num ? !(has && Number(v) === n) : !opts.some(o => sv === o);
@@ -128,9 +180,9 @@ function testCond(cond, c, s) {
 }
 function fillTemplate(str, c, s) {
   return String(str || '').replace(/\{(\w+)\}/g, (m, k) => {
-    const f = FIELDS[k.toLowerCase()];
-    if (!f) return m;
-    const v = f.get(c, s);
+    const key = Object.keys(FIELDS).find(x => x.toLowerCase() === k.toLowerCase());
+    if (!key) return m;
+    const v = showField(key, c, s);
     return v === '' || v === null ? '–' : String(v);
   });
 }
@@ -153,6 +205,10 @@ const PRESETS = {
   attribut: { label: 'Monster nach Attribut, Zauber/Fallen getrennt', rules: [
     R('Monster nach Attribut', [['kategorie', 'eq', 'Monster']], '{attribut}', '#e0892b'),
     R('Zauber & Fallen', [['kategorie', 'eq', 'Zauber, Falle']], '{kategorie}', '#1fa37a'),
+  ] },
+  format: { label: 'Nach Spielformat (z.B. GOAT, über Erstveröffentlichung)', rules: [
+    R('Spielformat', [['format', 'notempty']], '{format}', '#8a63d2'),
+    R('Kein Format', [], 'Kein Format', '#6b7280'),
   ] },
   deck: { label: 'Main Deck / Extra Deck', rules: [
     R('Extra Deck nach Art', [['deck', 'eq', 'Extra Deck']], 'Extra: {monsterart}', '#8a63d2'),
@@ -200,9 +256,12 @@ function compact(c, nd) {
     l: c.level ?? c.linkval ?? null, atk: c.atk ?? null, def: c.def ?? null, ar: c.archetype || '',
     p: parseFloat(c.card_prices?.[0]?.cardmarket_price) || 0,
     b: c.banlist_info?.ban_tcg || '',
+    d: c.misc_info?.[0]?.tcg_date || '',   // erste Veröffentlichung TCG (Europa/USA)
+    do: c.misc_info?.[0]?.ocg_date || '',  // erste Veröffentlichung OCG (Japan)
     s: (c.card_sets || []).map(s => [s.set_code, s.set_name, s.set_rarity]),
   };
 }
+const DB_VERSION = 2; // erhöhen, wenn sich das gespeicherte Kartenformat ändert
 function normName(s) {
   return String(s).toLowerCase()
     .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
@@ -219,8 +278,9 @@ function buildIndex(cards) {
   codeIndex = new Map();
   nameIndex = [];
   for (const c of cards) {
-    nameIndex.push({ norm: normName(c.n), card: c });
-    if (c.nd && c.nd !== c.n) nameIndex.push({ norm: normName(c.nd), card: c });
+    const same = !c.nd || normName(c.nd) === normName(c.n);
+    nameIndex.push({ norm: normName(c.n), card: c, lang: same ? '' : 'Englisch' });
+    if (!same) nameIndex.push({ norm: normName(c.nd), card: c, lang: 'Deutsch' });
     for (const [code, setName, rarity] of c.s) {
       const k = normCode(code);
       if (!k) continue;
@@ -236,9 +296,10 @@ async function loadDb(force = false) {
   dbReady = false;
   try {
     let data = force ? null : await idbGet('db').catch(() => null);
+    if (data && data.v !== DB_VERSION) data = null; // altes Format -> neu laden
     if (!data) {
       setDbStatus('Lade Kartendaten von YGOPRODeck (einmalig, kann etwas dauern)…');
-      const res = await fetch(API);
+      const res = await fetch(API + '?misc=yes');
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const en = await res.json();
       const deNames = {};
@@ -247,12 +308,13 @@ async function loadDb(force = false) {
         const de = await (await fetch(API + '?language=de')).json();
         for (const c of de.data || []) deNames[c.id] = c.name;
       } catch (e) { console.warn('Deutsche Namen nicht geladen', e); }
-      data = { date: Date.now(), cards: en.data.map(c => compact(c, deNames[c.id])) };
+      data = { v: DB_VERSION, date: Date.now(), cards: en.data.map(c => compact(c, deNames[c.id])) };
       await idbSet('db', data);
     }
     buildIndex(data.cards);
     setDbStatus(`${CARDS.length.toLocaleString('de-DE')} Karten · Stand ${new Date(data.date).toLocaleDateString('de-DE')}`);
     renderCollection();
+    updateFormatCounts();
   } catch (e) {
     console.error(e);
     setDbStatus('❌ Datenbank konnte nicht geladen werden: ' + e.message);
@@ -291,9 +353,10 @@ function fuzzyName(text, k = 5) {
     const d = lev(q, e.norm, maxD);
     if (d > maxD) continue;
     const score = 1 - d / L;
-    if (!(scores.get(e.card.id) >= score)) scores.set(e.card.id, score);
+    if (!(scores.get(e.card.id)?.score >= score)) scores.set(e.card.id, { score, lang: e.lang });
   }
-  return [...scores].sort((a, b) => b[1] - a[1]).slice(0, k).map(([id, score]) => ({ card: byId.get(id), score }));
+  return [...scores].sort((a, b) => b[1].score - a[1].score).slice(0, k)
+    .map(([id, { score, lang }]) => ({ card: byId.get(id), score, lang }));
 }
 function searchCards(text, k = 10) {
   const q = normName(text);
@@ -314,6 +377,12 @@ const DIGIT_FIX = { O: '0', Q: '0', D: '0', U: '0', I: '1', L: '1', T: '1', J: '
 const LETTER_FIX = { '0': 'O', '1': 'I', '5': 'S', '8': 'B', '2': 'Z', '6': 'G', '4': 'A' };
 const CONFUSE = { 0: '0OD', O: 'O0DQ', D: 'D0O', Q: 'Q0O', 1: '1IL', I: 'I1L', L: 'L1I', 5: '5S', S: 'S5B', 8: '8B', B: 'B8S', 2: '2Z', Z: 'Z2', 6: '6G', G: 'G6' };
 const REGION_CODES = new Set(['EN', 'DE', 'FR', 'IT', 'PT', 'SP', 'ES', 'E', 'G', 'F', 'I', 'P', 'S']);
+// Set-Code aus der Datenbank (meist "-EN") auf die Sprache der Karte umschreiben
+function codeForLang(code, lang) {
+  const m = String(code).match(/^([A-Z0-9]+)-([A-Z]{0,2})(.+)$/);
+  if (!m || !lang || !m[2] || !LANG_REGION[lang]) return code;
+  return `${m[1]}-${LANG_REGION[lang]}${m[3]}`;
+}
 // Varianten eines Präfixes, sortiert nach Anzahl ersetzter Zeichen
 function prefixVariants(s) {
   let out = [['', 0]];
@@ -346,7 +415,7 @@ function findByCode(text) {
           if (!/^\d{3}$/.test(num)) continue;
           for (const p of prefixVariants(prefix)) {
             const hit = codeIndex.get(p + '-' + num);
-            if (hit) return { card: hit.card, set: { ...hit.set, code: p + '-' + reg + num } };
+            if (hit) return { card: hit.card, set: { ...hit.set, code: p + '-' + reg + num, lang: REGION_LANG[reg] || '' } };
           }
         }
       }
@@ -374,7 +443,8 @@ const workers = {};
 function getWorker(kind) {
   if (!workers[kind]) {
     workers[kind] = (async () => {
-      const langs = kind === 'code' ? 'eng' : settings.lang === 'de' ? 'deu+eng' : 'eng';
+      // Namen immer mit deutschem UND englischem Modell lesen -> DE- und EN-Karten werden erkannt
+      const langs = kind === 'code' ? 'eng' : 'deu+eng';
       const w = await Tesseract.createWorker(langs, 1);
       const params = { tessedit_pageseg_mode: '7' }; // eine Textzeile
       if (kind === 'code') params.tessedit_char_whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-';
@@ -383,11 +453,6 @@ function getWorker(kind) {
     })();
   }
   return workers[kind];
-}
-async function resetNameWorker() {
-  const w = workers.name;
-  delete workers.name;
-  if (w) (await w).terminate();
 }
 
 function guideRect(sw, sh) {
@@ -459,7 +524,7 @@ async function recognizeCard(card, mode) {
     out.nameText = data.text.trim();
     out.candidates = fuzzyName(out.nameText, 5);
     const best = out.candidates[0];
-    if (best && best.score >= settings.minScore) out.match = { card: best.card, set: null, via: 'Name', score: best.score };
+    if (best && best.score >= settings.minScore) out.match = { card: best.card, set: langOnly(best.lang), via: 'Name', score: best.score };
   }
   return out;
 }
@@ -594,31 +659,35 @@ async function scanOnce(card) {
 }
 
 /* ------------------------------------------------------- Sammlung */
-let collection = LS.get('collection', {}); // key -> {id, code, setName, rarity, count, pile, color, first, last}
+let collection = LS.get('collection', {}); // key -> {id, code, setName, rarity, lang, count, pile, color, first, last}
 let history = [];
 const saveCollection = () => LS.set('collection', collection);
-const collKey = (id, code) => id + '|' + (code || '');
+const collKey = (id, code, lang) => id + '|' + (code || '') + '|' + (lang || '');
 
 function addToCollection(e, n = 1) {
-  const k = collKey(e.id, e.code);
-  const c = collection[k] ||= { id: e.id, code: e.code || '', setName: e.setName || '', rarity: e.rarity || '', count: 0, first: Date.now() };
+  const k = collKey(e.id, e.code, e.lang);
+  const c = collection[k] ||= { id: e.id, code: e.code || '', setName: e.setName || '', rarity: e.rarity || '', lang: e.lang || '', count: 0, first: Date.now() };
   c.count += n;
   c.pile = e.pile; c.color = e.color; c.last = Date.now();
   if (c.count <= 0) delete collection[k];
   saveCollection();
 }
-const entrySet = e => (e.code ? { code: e.code, name: e.setName, rarities: e.rarity ? e.rarity.split(' / ') : [] } : null);
+const entrySet = e => ({ code: e.code || '', name: e.setName || '', rarities: e.rarity ? e.rarity.split(' / ') : [], lang: e.lang || '' });
+function applyRules(e) {
+  const card = byId.get(e.id), s = entrySet(e), ev = evaluate(card, s);
+  e.pile = ev ? ev.pile : settings.ignoreUnmatched ? null : fillTemplate(settings.defaultPile, card, s) || 'Rest';
+  e.color = ev ? ev.color : '#6b7280';
+  return ev?.rule || null;
+}
 
 function accept(card, set, opts = {}) {
-  const ev = evaluate(card, set);
-  let pile = null, color = '#6b7280', rule = ev?.rule || null;
-  if (ev) { pile = ev.pile; color = ev.color; }
-  else if (!settings.ignoreUnmatched) pile = fillTemplate(settings.defaultPile, card, set) || 'Rest';
-
+  set ||= langOnly('');
   const entry = {
-    t: Date.now(), id: card.id, code: set?.code || '', setName: set?.name || '', rarity: (set?.rarities || []).join(' / '),
-    pile, color, via: opts.via || 'manuell', score: opts.score ?? 1, ruleId: rule?.id || null, added: false,
+    t: Date.now(), id: card.id, code: set.code || '', setName: set.name || '', rarity: (set.rarities || []).join(' / '), lang: set.lang || '',
+    via: opts.via || 'manuell', score: opts.score ?? 1, added: false,
   };
+  const rule = applyRules(entry);
+  const pile = entry.pile;
   if (pile !== null && settings.addToCollection && (!rule || rule.collect !== false)) {
     addToCollection(entry); entry.added = true;
   }
@@ -634,16 +703,22 @@ function undo(entry) {
   history = history.filter(h => h !== entry);
   renderHistory(); renderCollection();
 }
-function setPrinting(entry, code) {
+// Nachträglich Druck (Set-Code aus der DB) und/oder Sprache eines Scans ändern
+function updateEntry(entry, { code, lang }) {
   const card = byId.get(entry.id);
-  const sets = card.s.filter(s => s[0] === code);
   if (entry.added) addToCollection(entry, -1);
-  entry.code = code; entry.setName = sets[0]?.[1] || ''; entry.rarity = [...new Set(sets.map(s => s[2]))].join(' / ');
-  const ev = evaluate(card, entrySet(entry));
-  entry.pile = ev ? ev.pile : settings.ignoreUnmatched ? null : fillTemplate(settings.defaultPile, card, entrySet(entry));
-  entry.color = ev ? ev.color : '#6b7280';
+  if (lang !== undefined) entry.lang = lang;
+  if (code !== undefined) {
+    const sets = card.s.filter(s => s[0] === code);
+    entry.setName = sets[0]?.[1] || '';
+    entry.rarity = [...new Set(sets.map(s => s[2]))].join(' / ');
+    entry.dbCode = code;
+  }
+  if (entry.dbCode) entry.code = codeForLang(entry.dbCode, entry.lang);
+  else if (entry.code) entry.code = codeForLang(entry.code, entry.lang);
+  const rule = applyRules(entry);
   if (entry.added) addToCollection(entry);
-  showResult(card, entrySet(entry), entry, ev?.rule, {});
+  showResult(card, entrySet(entry), entry, rule, {});
   renderHistory(); renderCollection();
 }
 
@@ -711,7 +786,11 @@ function showResult(card, set, entry, rule, opts) {
         <div>${cardTags(card)}</div>
         <div class="small" style="margin-top:4px">
           ${set?.code ? `<b>${esc(set.code)}</b> · ${esc(set.name)} · ${esc((set.rarities || []).join(' / '))}` : '<span class="muted">Druck unbekannt</span>'}
-          · Preis ${euro(card.p)}
+          · Sprache: <b>${esc(set?.lang || 'unbekannt')}</b> · Preis ${euro(card.p)}
+        </div>
+        <div class="small" style="margin-top:2px">
+          📅 Erstveröffentlichung: <b>${card.d ? fmtDate(card.d) : '–'}</b> (TCG)${card.do ? ` · ${fmtDate(card.do)} (OCG/Japan)` : ''}
+          · Format: <b>${esc(formatsOf(card).join(', ') || 'keins')}</b>
         </div>
         <div class="muted small">erkannt über ${esc(entry.via)}${entry.via === 'Name' ? ` (${Math.round(entry.score * 100)} %)` : ''}${rule ? ` · Regel „${esc(rule.name)}“` : ' · keine Regel passt'}${entry.added ? ' · zur Sammlung hinzugefügt' : ''}</div>
       </div>
@@ -719,11 +798,13 @@ function showResult(card, set, entry, rule, opts) {
     <div class="actions">
       ${entry.added ? '<button data-a="plus">＋1 weiteres Exemplar</button>' : ''}
       <button data-a="undo">↶ Rückgängig</button>
-      ${printings.length ? `<select data-a="print"><option value="">${set?.code ? 'Druck ändern…' : 'Druck/Seltenheit wählen…'}</option>${printings.map(p => `<option ${p === set?.code ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>` : ''}
+      <select data-a="lang" title="Sprache der Karte"><option value="">Sprache …</option>${LANGS.map(l => `<option ${l === set?.lang ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      ${printings.length ? `<select data-a="print"><option value="">${set?.code ? 'Druck ändern…' : 'Druck/Seltenheit wählen…'}</option>${printings.map(p => `<option value="${esc(p)}" ${set?.code && normCode(p) === normCode(set.code) ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>` : ''}
     </div>`;
   el.querySelector('[data-a=plus]')?.addEventListener('click', () => { addToCollection(entry); renderCollection(); beep(hashFreq(entry.pile), 0.08); });
   el.querySelector('[data-a=undo]').addEventListener('click', () => { undo(entry); showBusy('Rückgängig gemacht'); });
-  el.querySelector('[data-a=print]')?.addEventListener('change', e => e.target.value && setPrinting(entry, e.target.value));
+  el.querySelector('[data-a=print]')?.addEventListener('change', e => e.target.value && updateEntry(entry, { code: e.target.value }));
+  el.querySelector('[data-a=lang]').addEventListener('change', e => updateEntry(entry, { lang: e.target.value }));
 
   // Alternativen anbieten, falls über den Namen erkannt
   renderCandidates((opts.candidates || []).filter(c => c.card.id !== card.id), entry);
@@ -744,7 +825,8 @@ function renderCandidates(cands, replaceEntry, thumb) {
     `<button data-i="${i}"><span>${esc(displayName(c.card))}</span><span class="muted small">${Math.round(c.score * 100)} %</span></button>`).join('')}</div>`;
   $$('button', box).forEach(b => b.addEventListener('click', () => {
     if (replaceEntry) undo(replaceEntry);
-    accept(cands[+b.dataset.i].card, null, { via: 'Auswahl', thumb });
+    const cand = cands[+b.dataset.i];
+    accept(cand.card, langOnly(cand.lang), { via: 'Auswahl', thumb });
   }));
 }
 function renderHistory() {
@@ -843,7 +925,7 @@ function renderRules() {
 }
 function buildDatalists() {
   const lists = {};
-  for (const [k, f] of Object.entries(FIELDS)) if (f.values) lists[k] = f.values;
+  for (const [k, f] of Object.entries(FIELDS)) if (f.values) lists[k] = typeof f.values === 'function' ? f.values() : f.values;
   lists.archetyp = [...new Set(CARDS.map(c => c.ar).filter(Boolean))].sort();
   lists.set = [...new Set([...codeIndex.values()].map(e => e.set.code.split('-')[0]))].sort();
   lists.seltenheit = [...new Set([...codeIndex.values()].flatMap(e => e.set.rarities))].sort();
@@ -852,7 +934,48 @@ function buildDatalists() {
 
 /* ------------------------------------------------------- UI: Sammlung */
 const SORT_KEYS = { '': '–', stapel: 'Stapel', ...Object.fromEntries(Object.entries(FIELDS).map(([k, f]) => [k, f.label])), setcode: 'Set-Code', anzahl: 'Anzahl', zuletzt: 'Zuletzt gescannt' };
-let collView = LS.get('collView', { sort: [['stapel', 1], ['name', 1], ['', 1]], group: 'stapel', q: '' });
+
+// Alle möglichen Tabellenspalten. val = Text (auch für CSV), html = optionale Darstellung
+const fieldCol = (key, label) => ({ key, label, num: FIELDS[key].num, val: (e, c) => showField(key, c, entrySet(e)) });
+const COLUMNS = [
+  { key: 'anzahl', label: 'Anz.', val: e => e.count,
+    html: e => `<span class="cnt"><button class="small" data-d="-1">−</button><b>${e.count}</b><button class="small" data-d="1">＋</button></span>` },
+  { key: 'name', label: 'Name', val: (e, c) => displayName(c),
+    html: (e, c) => `<b>${esc(displayName(c))}</b>${c.nd && settings.lang === 'de' && c.nd !== c.n ? `<div class="muted small">${esc(c.n)}</div>` : ''}` },
+  { key: 'nameDe', label: 'Name (DE)', val: (e, c) => c.nd },
+  { key: 'nameEn', label: 'Name (EN)', val: (e, c) => c.n },
+  { key: 'sprache', label: 'Sprache', val: e => e.lang || '' },
+  fieldCol('kategorie', 'Kategorie'),
+  fieldCol('monsterart', 'Monster-Art'),
+  fieldCol('deck', 'Deck'),
+  fieldCol('attribut', 'Attribut'),
+  fieldCol('typ', 'Typ'),
+  fieldCol('stufe', 'St.'),
+  fieldCol('atk', 'ATK'),
+  fieldCol('def', 'DEF'),
+  fieldCol('archetyp', 'Archetyp'),
+  { key: 'setcode', label: 'Set-Code', val: e => e.code || '' },
+  { key: 'setname', label: 'Set', val: e => e.setName || '' },
+  { key: 'seltenheit', label: 'Seltenheit', val: e => e.rarity || '' },
+  fieldCol('erstdruck', 'Erstveröff. (TCG)'),
+  fieldCol('erstdruckOcg', 'Erstveröff. (OCG)'),
+  fieldCol('jahr', 'Jahr'),
+  fieldCol('format', 'Format'),
+  fieldCol('formate', 'Alle Formate'),
+  fieldCol('banlist', 'Banlist'),
+  { key: 'preis', label: 'Preis', num: true, val: (e, c) => euro(c.p), csv: (e, c) => (c.p || 0).toFixed(2).replace('.', ',') },
+  { key: 'wert', label: 'Gesamtwert', num: true, val: (e, c) => euro(e.count * (c.p || 0)), csv: (e, c) => (e.count * (c.p || 0)).toFixed(2).replace('.', ',') },
+  { key: 'stapel', label: 'Stapel', val: e => e.pile || '',
+    html: e => (e.pile ? `<span class="pile-chip" style="background:${esc(e.color || '#6b7280')}">${esc(e.pile)}</span>` : '') },
+  { key: 'zuletzt', label: 'Zuletzt gescannt', val: e => (e.last ? new Date(e.last).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' }) : '') },
+];
+const COL_BY_KEY = Object.fromEntries(COLUMNS.map(c => [c.key, c]));
+const DEFAULT_COLS = ['anzahl', 'name', 'sprache', 'kategorie', 'attribut', 'typ', 'stufe', 'atk', 'def', 'setcode', 'seltenheit', 'erstdruck', 'format', 'preis', 'stapel'];
+
+let collView = { sort: [['stapel', 1], ['name', 1], ['', 1]], group: 'stapel', q: '', cols: DEFAULT_COLS, ...LS.get('collView', {}) };
+collView.cols = (collView.cols || DEFAULT_COLS).filter(k => COL_BY_KEY[k]);
+const saveCollView = () => LS.set('collView', collView);
+const visibleCols = () => collView.cols.map(k => COL_BY_KEY[k]).filter(Boolean);
 
 function sortValue(e, key) {
   const c = byId.get(e.id);
@@ -868,85 +991,106 @@ function cmp(a, b) {
   if (b === '' && a !== '') return -1;
   return String(a).localeCompare(String(b), 'de', { numeric: true });
 }
+function sortedEntries() {
+  let entries = Object.entries(collection).filter(([, e]) => byId.has(e.id));
+  const q = normName(collView.q || '');
+  if (q) entries = entries.filter(([, e]) => { const c = byId.get(e.id); return normName(c.n).includes(q) || normName(c.nd).includes(q) || normName(e.code).includes(q) || normName(e.pile || '').includes(q); });
+  const sorts = collView.sort.filter(([k]) => k);
+  entries.sort(([, a], [, b]) => { for (const [k, dir] of sorts) { const r = cmp(sortValue(a, k), sortValue(b, k)); if (r) return r * dir; } return 0; });
+  return entries;
+}
 function renderCollection() {
   const box = $('#collection');
   if (!dbReady) { box.innerHTML = '<p class="muted">Datenbank lädt…</p>'; return; }
-  let entries = Object.values(collection).filter(e => byId.has(e.id));
-  const q = normName(collView.q || '');
-  if (q) entries = entries.filter(e => { const c = byId.get(e.id); return normName(c.n).includes(q) || normName(c.nd).includes(q) || normName(e.code).includes(q) || normName(e.pile || '').includes(q); });
-  const sorts = collView.sort.filter(([k]) => k);
-  entries.sort((a, b) => { for (const [k, dir] of sorts) { const r = cmp(sortValue(a, k), sortValue(b, k)); if (r) return r * dir; } return 0; });
-
-  const total = entries.reduce((s, e) => s + e.count, 0);
-  const value = entries.reduce((s, e) => s + e.count * (byId.get(e.id).p || 0), 0);
+  const entries = sortedEntries();
+  const total = entries.reduce((s, [, e]) => s + e.count, 0);
+  const value = entries.reduce((s, [, e]) => s + e.count * (byId.get(e.id).p || 0), 0);
   $('#collSummary').textContent = `${total.toLocaleString('de-DE')} Karten (${entries.length} verschiedene) · geschätzter Wert ${euro(value)}`;
-
-  const groups = new Map();
-  for (const e of entries) {
-    const g = collView.group ? String(sortValue(e, collView.group) || '–') : '';
-    if (!groups.has(g)) groups.set(g, []);
-    groups.get(g).push(e);
-  }
-  const row = e => {
-    const c = byId.get(e.id);
-    return `<tr data-k="${esc(collKey(e.id, e.code))}">
-      <td><span class="cnt"><button class="small" data-d="-1">−</button><b>${e.count}</b><button class="small" data-d="1">＋</button></span></td>
-      <td><b>${esc(displayName(c))}</b>${c.nd && settings.lang === 'de' && c.nd !== c.n ? `<div class="muted small">${esc(c.n)}</div>` : ''}</td>
-      <td>${esc(category(c))}${monsterArt(c) ? ' · ' + esc(monsterArt(c)) : ''}</td>
-      <td>${esc([FIELDS.attribut.get(c), FIELDS.typ.get(c)].filter(Boolean).join(' / '))}</td>
-      <td class="num">${c.l ?? ''}</td>
-      <td class="num">${isMonster(c) ? `${c.atk ?? '?'}${c.def != null ? '/' + c.def : ''}` : ''}</td>
-      <td>${esc(e.code || '–')}</td>
-      <td>${esc(e.rarity || '')}</td>
-      <td class="num">${euro(c.p)}</td>
-      <td>${e.pile ? `<span class="pile-chip" style="background:${esc(e.color || '#6b7280')}">${esc(e.pile)}</span>` : ''}</td>
-    </tr>`;
-  };
-  const table = list => `<div class="table-wrap"><table><thead><tr><th>Anz.</th><th>Name</th><th>Kategorie</th><th>Attribut / Typ</th><th class="num">St.</th><th class="num">ATK/DEF</th><th>Set-Code</th><th>Seltenheit</th><th class="num">Preis</th><th>Stapel</th></tr></thead><tbody>${list.map(row).join('')}</tbody></table></div>`;
   if (!entries.length) { box.innerHTML = '<p class="muted">Noch keine Karten in der Sammlung. Scanne welche!</p>'; return; }
-  box.innerHTML = collView.group
-    ? [...groups].map(([g, list]) => `<div class="group-h"><h3>${esc(g)}</h3><span class="muted">${list.reduce((s, e) => s + e.count, 0)} Karten · ${euro(list.reduce((s, e) => s + e.count * (byId.get(e.id).p || 0), 0))}</span></div>${table(list)}`).join('')
-    : table(entries);
+
+  const cols = visibleCols();
+  const cell = (col, e, c) => `<td${col.num ? ' class="num"' : ''}>${col.html ? col.html(e, c) : esc(col.val(e, c))}</td>`;
+  const row = ([k, e]) => { const c = byId.get(e.id); return `<tr data-k="${esc(k)}">${cols.map(col => cell(col, e, c)).join('')}</tr>`; };
+  const table = list => `<div class="table-wrap"><table><thead><tr>${cols.map(col => `<th${col.num ? ' class="num"' : ''}>${esc(col.label)}</th>`).join('')}</tr></thead><tbody>${list.map(row).join('')}</tbody></table></div>`;
+
+  if (!collView.group) { box.innerHTML = table(entries); return; }
+  const groups = new Map();
+  for (const pair of entries) {
+    const e = pair[1];
+    const raw = sortValue(e, collView.group);
+    const g = String((FIELDS[collView.group]?.date ? fmtDate(raw) : raw) || '–');
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(pair);
+  }
+  box.innerHTML = [...groups].map(([g, list]) => `<div class="group-h"><h3>${esc(g)}</h3><span class="muted">${list.reduce((s, [, e]) => s + e.count, 0)} Karten · ${euro(list.reduce((s, [, e]) => s + e.count * (byId.get(e.id).p || 0), 0))}</span></div>${table(list)}`).join('');
+}
+// Spaltenauswahl: sichtbare Spalten (in Reihenfolge, verschiebbar) + ausgeblendete
+function renderColChooser() {
+  const box = $('#colChooser');
+  const hidden = COLUMNS.filter(c => !collView.cols.includes(c.key));
+  const item = (col, on, i) => `<div class="col-item${on ? ' on' : ''}">
+      <label class="chk"><input type="checkbox" data-col="${col.key}" ${on ? 'checked' : ''}> ${esc(col.label)}</label>
+      ${on ? `<button class="small" data-mv="-1" data-i="${i}" ${i === 0 ? 'disabled' : ''} title="nach links">◀</button><button class="small" data-mv="1" data-i="${i}" ${i === collView.cols.length - 1 ? 'disabled' : ''} title="nach rechts">▶</button>` : ''}
+    </div>`;
+  box.innerHTML = `<div class="muted small">Angezeigt (Reihenfolge mit ◀ ▶ ändern):</div>
+    <div class="col-list">${visibleCols().map((c, i) => item(c, true, i)).join('')}</div>
+    <div class="muted small" style="margin-top:8px">Ausgeblendet:</div>
+    <div class="col-list">${hidden.map(c => item(c, false)).join('') || '<span class="muted small">–</span>'}</div>
+    <div style="margin-top:8px"><button class="small" data-reset>Standard wiederherstellen</button></div>`;
 }
 function initCollectionUi() {
-  const opts = sel => Object.entries(SORT_KEYS).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('');
+  const opts = () => Object.entries(SORT_KEYS).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('');
   $$('.sortKey').forEach(s => { s.innerHTML = opts(); s.value = collView.sort[+s.dataset.i][0]; });
   $$('.sortDir').forEach(b => { b.textContent = collView.sort[+b.dataset.i][1] > 0 ? '↑' : '↓'; });
-  $('#groupBy').innerHTML = Object.entries(SORT_KEYS).filter(([k]) => !['anzahl', 'zuletzt', 'name', 'atk', 'def', 'preis'].includes(k)).map(([k, l]) => `<option value="${k}">${esc(l === '–' ? 'nicht gruppieren' : l)}</option>`).join('');
+  $('#groupBy').innerHTML = Object.entries(SORT_KEYS).filter(([k]) => !['anzahl', 'zuletzt', 'name', 'atk', 'def', 'preis', 'erstdruckOcg'].includes(k)).map(([k, l]) => `<option value="${k}">${esc(l === '–' ? 'nicht gruppieren' : l)}</option>`).join('');
   $('#groupBy').value = collView.group;
   $('#collSearch').value = collView.q;
-  const save = () => { LS.set('collView', collView); renderCollection(); };
+  const save = () => { saveCollView(); renderCollection(); };
   $$('.sortKey').forEach(s => s.addEventListener('change', () => { collView.sort[+s.dataset.i][0] = s.value; save(); }));
   $$('.sortDir').forEach(b => b.addEventListener('click', () => { const s = collView.sort[+b.dataset.i]; s[1] *= -1; b.textContent = s[1] > 0 ? '↑' : '↓'; save(); }));
   $('#groupBy').addEventListener('change', e => { collView.group = e.target.value; save(); });
   $('#collSearch').addEventListener('input', e => { collView.q = e.target.value; save(); });
+
+  $('#btnCols').addEventListener('click', () => { const b = $('#colChooser'); b.hidden = !b.hidden; if (!b.hidden) renderColChooser(); });
+  $('#colChooser').addEventListener('change', e => {
+    const k = e.target.dataset.col; if (!k) return;
+    collView.cols = e.target.checked ? [...collView.cols, k] : collView.cols.filter(x => x !== k);
+    renderColChooser(); save();
+  });
+  $('#colChooser').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.hasAttribute('data-reset')) collView.cols = [...DEFAULT_COLS];
+    else if (b.dataset.mv) {
+      const i = +b.dataset.i, j = i + +b.dataset.mv, a = collView.cols;
+      if (j < 0 || j >= a.length) return;
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    renderColChooser(); save();
+  });
+
   $('#collection').addEventListener('click', e => {
     const b = e.target.closest('button[data-d]');
     if (!b) return;
-    const ent = collection[b.closest('tr').dataset.k];
+    const k = b.closest('tr').dataset.k, ent = collection[k];
     if (!ent) return;
     ent.count += +b.dataset.d;
-    if (ent.count <= 0) delete collection[b.closest('tr').dataset.k];
+    if (ent.count <= 0) delete collection[k];
     saveCollection(); renderCollection();
   });
   $('#btnRepile').addEventListener('click', () => {
-    for (const e of Object.values(collection)) {
-      const c = byId.get(e.id); if (!c) continue;
-      const ev = evaluate(c, entrySet(e));
-      e.pile = ev ? ev.pile : settings.ignoreUnmatched ? '' : fillTemplate(settings.defaultPile, c, entrySet(e));
-      e.color = ev ? ev.color : '#6b7280';
-    }
+    for (const e of Object.values(collection)) if (byId.has(e.id)) applyRules(e);
     saveCollection(); renderCollection();
   });
   $('#btnCsv').addEventListener('click', exportCsv);
-  $('#btnBackup').addEventListener('click', () => download('ygo-backup.json', JSON.stringify({ version: 1, collection, rules, settings }, null, 1), 'application/json'));
+  $('#btnBackup').addEventListener('click', () => download('ygo-backup.json', JSON.stringify({ version: 2, collection, rules, formats, settings, collView }, null, 1), 'application/json'));
   $('#backupInput').addEventListener('change', async e => {
     const f = e.target.files[0]; if (!f) return;
     try {
       const data = JSON.parse(await f.text());
-      if (!confirm('Backup laden? Sammlung und Regeln werden ersetzt.')) return;
+      if (!confirm('Backup laden? Sammlung, Regeln und Formate werden ersetzt.')) return;
       if (data.collection) { collection = data.collection; saveCollection(); }
       if (data.rules) { rules = data.rules.map(hydrateRule); saveRules(); renderRules(); }
+      if (data.formats) { formats = data.formats; saveFormats(); renderFormats(); }
       renderCollection();
     } catch (err) { alert('Backup konnte nicht gelesen werden: ' + err.message); }
     e.target.value = '';
@@ -961,15 +1105,59 @@ function download(name, text, type) {
   a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
+// CSV mit den aktuell angezeigten Spalten in der aktuellen Sortierung
 function exportCsv() {
-  const cols = ['Anzahl', 'Name', 'Name (EN)', 'Kategorie', 'Monster-Art', 'Attribut', 'Typ', 'Stufe', 'ATK', 'DEF', 'Archetyp', 'Set-Code', 'Set', 'Seltenheit', 'Preis €', 'Stapel'];
+  const cols = visibleCols();
   const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-  const lines = [cols.join(';')];
-  for (const e of Object.values(collection)) {
-    const c = byId.get(e.id); if (!c) continue;
-    lines.push([e.count, c.nd || c.n, c.n, category(c), monsterArt(c), FIELDS.attribut.get(c), FIELDS.typ.get(c), c.l ?? '', c.atk ?? '', c.def ?? '', c.ar, e.code, e.setName, e.rarity, (c.p || 0).toFixed(2).replace('.', ','), e.pile].map(q).join(';'));
+  const lines = [cols.map(c => q(c.label)).join(';')];
+  for (const [, e] of sortedEntries()) {
+    const c = byId.get(e.id);
+    lines.push(cols.map(col => q((col.csv || col.val)(e, c))).join(';'));
   }
   download('ygo-sammlung.csv', '﻿' + lines.join('\r\n'), 'text/csv;charset=utf-8');
+}
+
+/* ------------------------------------------------------- UI: Spielformate */
+function renderFormats() {
+  const box = $('#formatsList');
+  box.innerHTML = formats.map((f, i) => `
+    <div class="format-row" data-i="${i}">
+      <input type="text" data-f="name" value="${esc(f.name)}" placeholder="Name, z.B. GOAT">
+      <label>von <input type="date" data-f="from" value="${esc(f.from)}"></label>
+      <label>bis <input type="date" data-f="to" value="${esc(f.to)}"></label>
+      <span class="muted small" data-count></span>
+      <button class="small danger" data-del title="Format löschen">🗑</button>
+    </div>`).join('') || '<p class="muted small">Noch keine Formate angelegt.</p>';
+  updateFormatCounts();
+  buildDatalistsSafe();
+}
+function updateFormatCounts() {
+  if (!dbReady) return;
+  $$('#formatsList .format-row').forEach(row => {
+    const f = formats[+row.dataset.i];
+    const n = CARDS.filter(c => c.d && (!f.from || c.d >= f.from) && (!f.to || c.d <= f.to)).length;
+    row.querySelector('[data-count]').textContent = `${n.toLocaleString('de-DE')} Karten`;
+  });
+}
+const buildDatalistsSafe = () => { if (dbReady) buildDatalists(); };
+function initFormatsUi() {
+  const box = $('#formatsList');
+  box.addEventListener('change', e => {
+    const row = e.target.closest('.format-row'); if (!row || !e.target.dataset.f) return;
+    formats[+row.dataset.i][e.target.dataset.f] = e.target.value.trim();
+    saveFormats(); updateFormatCounts(); buildDatalistsSafe(); renderCollection();
+  });
+  box.addEventListener('click', e => {
+    if (!e.target.closest('[data-del]')) return;
+    const i = +e.target.closest('.format-row').dataset.i;
+    if (!confirm(`Format „${formats[i].name}“ löschen?`)) return;
+    formats.splice(i, 1); saveFormats(); renderFormats(); renderCollection();
+  });
+  $('#btnAddFormat').addEventListener('click', () => {
+    formats.push({ id: uid(), name: 'Neues Format', from: '', to: '' });
+    saveFormats(); renderFormats();
+  });
+  renderFormats();
 }
 
 /* ------------------------------------------------------- Init */
@@ -982,7 +1170,7 @@ function initSettingsUi() {
       if (el.type === 'number' || typeof DEFAULT_SETTINGS[k] === 'number') v = Number(v);
       settings[k] = v;
       saveSettings();
-      if (k === 'lang') { await resetNameWorker(); renderCollection(); renderHistory(); }
+      if (k === 'lang') { renderCollection(); renderHistory(); }
       if (k === 'debug') $('#debug').hidden = !v;
     });
   }
@@ -1006,12 +1194,12 @@ function init() {
   $('#btnSnap').addEventListener('click', () => scanOnce(grabFrame()));
   $('#fileInput').addEventListener('change', async e => {
     const f = e.target.files[0]; if (!f) return;
-    const img = new Image();
-    img.src = URL.createObjectURL(f);
-    await img.decode();
-    // Das Foto sollte die Karte möglichst formatfüllend zeigen
-    await scanOnce(toCardCanvas(img, 0, 0, img.naturalWidth, img.naturalHeight));
-    URL.revokeObjectURL(img.src);
+    try {
+      const bmp = await createImageBitmap(f); // berücksichtigt die Drehung von Handyfotos
+      // Das Foto sollte die Karte möglichst formatfüllend zeigen
+      await scanOnce(toCardCanvas(bmp, 0, 0, bmp.width, bmp.height));
+      bmp.close?.();
+    } catch (err) { showBusy('Bild konnte nicht gelesen werden: ' + err.message); }
     e.target.value = '';
   });
   video.addEventListener('loadedmetadata', layoutGuide);
@@ -1043,6 +1231,7 @@ function init() {
   renderRules();
 
   initCollectionUi();
+  initFormatsUi();
   initSettingsUi();
   renderHistory();
   loadDb();

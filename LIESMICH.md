@@ -17,5 +17,8 @@ Handy-Browser erlauben Live-Kamera nur über **HTTPS**. Möglichkeiten:
 - **Scannen nach:** Set-Code (z. B. `LOB-DE001`, am zuverlässigsten, liefert auch Set & Seltenheit) und/oder Kartenname.
 - **Live-Scan:** Karte in den Rahmen halten → Stapel wird groß angezeigt, Ton/Ansage/Vibration. Karte kurz wegnehmen, bevor das nächste identische Exemplar kommt (oder „＋1“ drücken).
 - **Regeln:** von oben nach unten, die erste passende entscheidet Stapel, Farbe, Ton, Alarm. Platzhalter im Stapelnamen: `{attribut}`, `{archetyp}`, `{kategorie}`, `{stufe}`, `{set}`, `{anfangsbuchstabe}`, `{typ}`, `{monsterart}`, `{deck}`, `{banlist}` …
-- **Sammlung:** bis zu 3 Sortierstufen, Gruppieren, CSV-Export (Excel), JSON-Backup.
+- **Sprache:** Deutsche und englische Karten werden erkannt. Die Sprache kommt aus dem Set-Code (`-DE`/`-EN`) bzw. dem erkannten Namen und lässt sich im Ergebnis korrigieren.
+- **Erstveröffentlichung:** erstes Erscheinen im TCG (Europa/USA), zusätzlich OCG (Japan) – im Scanergebnis und als Tabellenspalte.
+- **Spielformate** (Tab „Regeln“): Zeitraum je Format, z. B. GOAT 01.01.2002–05.08.2005. Eine Karte gehört dazu, wenn ihre TCG-Erstveröffentlichung im Zeitraum liegt. Vorlage „Nach Spielformat“ sortiert danach.
+- **Sammlung:** Spalten frei wählbar und verschiebbar („Spalten anpassen“), bis zu 3 Sortierstufen, Gruppieren, CSV-Export (mit den angezeigten Spalten), JSON-Backup.
 - **Erkennung klappt nicht?** Einstellungen → „OCR-Ausschnitte anzeigen“ zeigt, was die Kamera liest.

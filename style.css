@@ -106,6 +106,17 @@ td.num, th.num { text-align: right; }
 .pile-chip { display: inline-block; padding: 1px 8px; border-radius: 10px; color: #fff; font-weight: 600; font-size: .85em; text-shadow: 0 1px 1px #0006; }
 .table-wrap { overflow-x: auto; }
 
+.col-chooser { background: #00000025; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+.col-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.col-item { display: inline-flex; align-items: center; gap: 4px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 3px 6px; font-size: .9em; }
+.col-item.on { border-color: var(--accent); }
+.col-item button { padding: 0 6px; }
+
+/* ----- Spielformate ----- */
+.format-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.format-row input[type=text] { width: 160px; font-weight: 600; }
+input[type=date] { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; }
+
 /* ----- Einstellungen ----- */
 .settings { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; max-width: 700px; }
 .settings h2 { margin-top: 10px; }

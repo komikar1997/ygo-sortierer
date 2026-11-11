@@ -79,7 +79,8 @@
   <div class="card-box">
     <h2>Worauf soll der Scan reagieren?</h2>
     <p class="muted">Die Regeln werden von oben nach unten geprüft – die <b>erste passende Regel</b> bestimmt den Stapel, die Farbe und den Ton.
-      Im Stapelnamen kannst du Platzhalter verwenden, z.B. <code>{attribut}</code>, <code>{archetyp}</code>, <code>{kategorie}</code>, <code>{stufe}</code>, <code>{set}</code>, <code>{anfangsbuchstabe}</code>.
+      Im Stapelnamen kannst du Platzhalter verwenden, z.B. <code>{attribut}</code>, <code>{archetyp}</code>, <code>{kategorie}</code>, <code>{stufe}</code>, <code>{set}</code>, <code>{anfangsbuchstabe}</code>, <code>{format}</code>, <code>{jahr}</code>, <code>{sprache}</code>.
+      Datumswerte als <code>TT.MM.JJJJ</code> eingeben.
       Mehrere Werte in einer Bedingung mit Komma trennen (z.B. <code>Zauber, Falle</code>).</p>
     <div class="toolbar">
       <label>Vorlage laden
@@ -89,6 +90,14 @@
     </div>
   </div>
   <div id="rulesList"></div>
+  <div class="card-box">
+    <h3>📅 Spielformate</h3>
+    <p class="muted small">Eine Karte gehört zu einem Format, wenn ihre <b>Erstveröffentlichung im TCG</b> (Europa/USA) im Zeitraum liegt.
+      In Regeln nutzbar über das Feld „Spielformat“ bzw. den Platzhalter <code>{format}</code> – oder einfach die Vorlage „Nach Spielformat“ laden.
+      Passt eine Karte in mehrere Formate, zählt das oberste; alle stehen in „Alle passenden Formate“.</p>
+    <div id="formatsList"></div>
+    <button id="btnAddFormat" class="small">＋ Format hinzufügen</button>
+  </div>
   <div class="card-box">
     <h3>Regel testen</h3>
     <input id="ruleTest" type="search" placeholder="Kartenname eingeben…" autocomplete="off">
@@ -108,12 +117,14 @@
       <input id="collSearch" type="search" placeholder="Filtern…">
     </div>
     <div class="toolbar wrap">
+      <button id="btnCols">▦ Spalten anpassen</button>
       <button id="btnRepile">Stapel mit aktuellen Regeln neu berechnen</button>
       <button id="btnCsv">CSV exportieren</button>
       <button id="btnBackup">Backup (JSON)</button>
       <label class="btn">Backup laden<input type="file" id="backupInput" accept=".json,application/json" hidden></label>
       <button id="btnClear" class="danger">Sammlung leeren</button>
     </div>
+    <div id="colChooser" class="col-chooser" hidden></div>
     <div id="collSummary" class="muted"></div>
   </div>
   <div id="collection"></div>
