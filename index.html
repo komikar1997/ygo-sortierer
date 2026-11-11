@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14161c">
+<title>YGO Karten-Sortierer</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+<body>
+<header>
+  <div class="brand">🃏 <b>YGO Sortierer</b></div>
+  <nav>
+    <button data-tab="scan" class="active">📷 Scannen</button>
+    <button data-tab="rules">🧩 Regeln</button>
+    <button data-tab="collection">📚 Sammlung</button>
+    <button data-tab="settings">⚙️ Einstellungen</button>
+  </nav>
+  <div id="dbStatus" class="muted small">Datenbank wird geladen…</div>
+</header>
+
+<div id="secureWarning" class="banner" hidden>
+  ⚠️ Diese Seite läuft nicht über HTTPS – Handy-Browser erlauben dann keinen Live-Kamerazugriff.
+  „Bild laden“ funktioniert trotzdem (öffnet die Handykamera für ein Foto).
+</div>
+
+<main>
+<!-- ============ SCANNEN ============ -->
+<section id="tab-scan" class="tab active">
+  <div class="toolbar">
+    <label>Scannen nach
+      <select id="scanMode">
+        <option value="both">Set-Code, sonst Name</option>
+        <option value="code">Nur Set-Code (z.B. LOB-DE001)</option>
+        <option value="name">Nur Kartenname</option>
+      </select>
+    </label>
+    <select id="cameraSelect" title="Kamera wählen" hidden></select>
+    <button id="btnCamera" class="primary">Kamera starten</button>
+    <button id="btnLive" disabled>▶ Live-Scan</button>
+    <button id="btnSnap" disabled>📸 Foto scannen</button>
+    <label class="btn">🖼 Bild laden<input type="file" id="fileInput" accept="image/*" capture="environment" hidden></label>
+  </div>
+
+  <div class="scan-layout">
+    <div class="camera-col">
+      <div class="camera-wrap" id="cameraWrap">
+        <video id="video" playsinline muted></video>
+        <div id="guide" hidden>
+          <div class="region" data-r="name"></div>
+          <div class="region" data-r="code"></div>
+          <div class="region" data-r="codePend"></div>
+        </div>
+        <div id="cameraHint">Kamera starten oder ein Foto laden.<br>Die Karte so in den Rahmen halten, dass sie ihn ausfüllt.</div>
+        <div id="liveIndicator" hidden></div>
+      </div>
+      <p class="muted small">Tipp: Gute, blendfreie Beleuchtung und dunkler Untergrund helfen. Der Set-Code (unter dem Bild rechts, bei Pendel links unten) wird am zuverlässigsten erkannt.</p>
+    </div>
+
+    <div class="side-col">
+      <div id="result" class="result empty">
+        <div class="pile">Noch keine Karte</div>
+      </div>
+      <div id="candidates"></div>
+      <div class="manual">
+        <input id="manualSearch" type="search" placeholder="🔎 Karte manuell suchen (DE oder EN)…" autocomplete="off">
+        <div id="manualResults" class="list"></div>
+      </div>
+      <div id="debug" hidden></div>
+      <h3>Letzte Scans</h3>
+      <ul id="history" class="history"></ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============ REGELN ============ -->
+<section id="tab-rules" class="tab">
+  <div class="card-box">
+    <h2>Worauf soll der Scan reagieren?</h2>
+    <p class="muted">Die Regeln werden von oben nach unten geprüft – die <b>erste passende Regel</b> bestimmt den Stapel, die Farbe und den Ton.
+      Im Stapelnamen kannst du Platzhalter verwenden, z.B. <code>{attribut}</code>, <code>{archetyp}</code>, <code>{kategorie}</code>, <code>{stufe}</code>, <code>{set}</code>, <code>{anfangsbuchstabe}</code>.
+      Mehrere Werte in einer Bedingung mit Komma trennen (z.B. <code>Zauber, Falle</code>).</p>
+    <div class="toolbar">
+      <label>Vorlage laden
+        <select id="presetSelect"><option value="">– Vorlage wählen –</option></select>
+      </label>
+      <button id="btnAddRule" class="primary">＋ Neue Regel</button>
+    </div>
+  </div>
+  <div id="rulesList"></div>
+  <div class="card-box">
+    <h3>Regel testen</h3>
+    <input id="ruleTest" type="search" placeholder="Kartenname eingeben…" autocomplete="off">
+    <div id="ruleTestOut" class="list"></div>
+  </div>
+  <div id="datalists"></div>
+</section>
+
+<!-- ============ SAMMLUNG ============ -->
+<section id="tab-collection" class="tab">
+  <div class="card-box">
+    <div class="toolbar wrap">
+      <label>Sortieren nach <select class="sortKey" data-i="0"></select><button class="sortDir" data-i="0">↑</button></label>
+      <label>dann <select class="sortKey" data-i="1"></select><button class="sortDir" data-i="1">↑</button></label>
+      <label>dann <select class="sortKey" data-i="2"></select><button class="sortDir" data-i="2">↑</button></label>
+      <label>Gruppieren <select id="groupBy"></select></label>
+      <input id="collSearch" type="search" placeholder="Filtern…">
+    </div>
+    <div class="toolbar wrap">
+      <button id="btnRepile">Stapel mit aktuellen Regeln neu berechnen</button>
+      <button id="btnCsv">CSV exportieren</button>
+      <button id="btnBackup">Backup (JSON)</button>
+      <label class="btn">Backup laden<input type="file" id="backupInput" accept=".json,application/json" hidden></label>
+      <button id="btnClear" class="danger">Sammlung leeren</button>
+    </div>
+    <div id="collSummary" class="muted"></div>
+  </div>
+  <div id="collection"></div>
+</section>
+
+<!-- ============ EINSTELLUNGEN ============ -->
+<section id="tab-settings" class="tab">
+  <div class="card-box settings">
+    <h2>Datenbank</h2>
+    <label>Sprache der Kartennamen
+      <select data-set="lang"><option value="de">Deutsch</option><option value="en">Englisch</option></select>
+    </label>
+    <p class="muted small">Kartendaten von <a href="https://ygoprodeck.com/api-guide/" target="_blank" rel="noopener">YGOPRODeck</a> (kostenlos). Sie werden einmal geladen und im Browser gespeichert. Preise = Cardmarket-Durchschnitt in €.</p>
+    <button id="btnReloadDb">Datenbank neu herunterladen</button>
+
+    <h2>Scan</h2>
+    <label>Live-Scan-Intervall (ms) <input type="number" data-set="interval" min="200" max="5000" step="100"></label>
+    <label>Bestätigungen bevor eine Karte zählt
+      <select data-set="confirmations"><option value="1">1 (schnell)</option><option value="2">2 (sicherer)</option><option value="3">3 (sehr sicher)</option></select>
+    </label>
+    <label>Mindest-Ähnlichkeit beim Namensvergleich (0.5–1) <input type="number" data-set="minScore" min="0.5" max="1" step="0.01"></label>
+
+    <h2>Reaktion</h2>
+    <label class="chk"><input type="checkbox" data-set="sound"> Ton abspielen</label>
+    <label class="chk"><input type="checkbox" data-set="speech"> Stapelnamen ansagen (Sprachausgabe)</label>
+    <label class="chk"><input type="checkbox" data-set="vibrate"> Vibrieren (Handy)</label>
+    <label class="chk"><input type="checkbox" data-set="addToCollection"> Erkannte Karten zur Sammlung hinzufügen</label>
+    <label class="chk"><input type="checkbox" data-set="ignoreUnmatched"> Karten ohne passende Regel ignorieren</label>
+    <label>Stapel für Karten ohne passende Regel <input type="text" data-set="defaultPile"></label>
+
+    <h2>Fehlersuche</h2>
+    <label class="chk"><input type="checkbox" data-set="debug"> OCR-Ausschnitte und erkannten Text anzeigen</label>
+  </div>
+</section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
