@@ -1313,12 +1313,23 @@ function showResult(card, set, entry, rule, opts) {
     </div>
     <div class="fix-box" data-fix hidden></div>
     <div class="actions">
-      ${entry.added ? '<button data-a="plus">＋1 weiteres Exemplar</button>' : ''}
+      ${entry.added
+        ? '<button class="in-coll" data-a="coll-out" title="Diesen Scan wieder aus der Sammlung nehmen">📚 ✓ In Sammlung – entfernen</button><button data-a="plus">＋1 weiteres Exemplar</button>'
+        : '<button class="add-coll" data-a="coll-in">📚 Zur Sammlung hinzufügen</button>'}
       <button data-a="undo">↶ Rückgängig</button>
       <select data-a="lang" title="Sprache der Karte"><option value="">Sprache …</option>${LANGS.map(l => `<option ${l === set?.lang ? 'selected' : ''}>${l}</option>`).join('')}</select>
       ${printings.length ? `<select data-a="print"><option value="">${set?.code ? 'Druck ändern…' : 'Druck/Seltenheit wählen…'}</option>${printings.map(p => `<option value="${esc(p)}" ${set?.code && normCode(p) === normCode(set.code) ? 'selected' : ''}>${esc(codeForLang(p, set?.lang))}</option>`).join('')}</select>` : ''}
     </div>`;
   el.querySelector('[data-a=plus]')?.addEventListener('click', () => { addToCollection(entry); renderCollection(); beep(hashFreq(entry.pile), 0.08); });
+  // Einzelne Karte nachträglich in die Sammlung übernehmen bzw. wieder herausnehmen
+  const toggleColl = add => {
+    addToCollection(entry, add ? 1 : -1);
+    entry.added = add;
+    saveHistory(); renderHistory(); renderCollection();
+    showResult(card, set, entry, rule, opts);
+  };
+  el.querySelector('[data-a=coll-in]')?.addEventListener('click', () => toggleColl(true));
+  el.querySelector('[data-a=coll-out]')?.addEventListener('click', () => toggleColl(false));
   el.querySelector('[data-a=undo]').addEventListener('click', () => { undo(entry); showBusy('Rückgängig gemacht'); });
   el.querySelector('[data-a=print]')?.addEventListener('change', e => e.target.value && updateEntry(entry, { code: e.target.value }));
   el.querySelector('[data-a=lang]').addEventListener('change', e => updateEntry(entry, { lang: e.target.value }));
@@ -1392,7 +1403,7 @@ function renderHistory() {
       <span class="dot" style="background:${esc(h.color)}"></span>
       <span class="h-main">
         <span class="h-name">${esc(displayName(c))}<a href="${esc(cardclusterUrl(c))}" target="_blank" rel="noopener" title="Auf cardcluster ansehen">🔗</a></span>
-        <span class="h-tags"><span class="tag">${CAT_ICON[cat] || ''} ${esc(cat)}</span>${fs.map(f => `<span class="tag fmt">${esc(f)}</span>`).join('')}${h.lang ? `<span class="tag">${esc(LANG_REGION[h.lang] || h.lang)}</span>` : ''}${h.code ? `<span class="muted small">${esc(h.code)}</span>` : ''}</span>
+        <span class="h-tags"><span class="tag">${CAT_ICON[cat] || ''} ${esc(cat)}</span>${fs.map(f => `<span class="tag fmt">${esc(f)}</span>`).join('')}${h.lang ? `<span class="tag">${esc(LANG_REGION[h.lang] || h.lang)}</span>` : ''}${h.added ? '<span class="tag" title="in der Sammlung">📚</span>' : ''}${h.code ? `<span class="muted small">${esc(h.code)}</span>` : ''}</span>
       </span>
       <span class="p">${h.pile === null ? '<span class="muted">ignoriert</span>' : esc(h.pile)}</span>
     </li>`;
@@ -1786,11 +1797,19 @@ function initSettingsUi() {
       if (k === 'debug') $('#debug').hidden = !v;
       if (k === 'useAtk' || k === 'useStars') layoutGuide();
       if (k === 'theme') applyTheme();
+      if (k === 'addToCollection') syncCollectToggle();
     });
   }
   $('#btnReloadDb').addEventListener('click', () => { if (confirm('Kartendatenbank neu herunterladen (z.B. für neue Sets und aktuelle Preise)?')) loadDb(true); });
 }
 
+// Schalter in der Scan-Leiste und Häkchen in den Einstellungen gleich halten
+function syncCollectToggle() {
+  const on = !!settings.addToCollection;
+  $('#collectToggle').checked = on;
+  $('#collectBox').classList.toggle('on', on);
+  const s = $('[data-set=addToCollection]'); if (s) s.checked = on;
+}
 // Hell/Dunkel anwenden ("auto" folgt dem Gerät)
 function applyTheme() {
   const t = settings.theme === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : settings.theme;
@@ -1823,6 +1842,12 @@ function init() {
   fsBox.classList.toggle('on', settings.formatScan);
   $('#formatScan').addEventListener('change', e => { settings.formatScan = e.target.checked; fsBox.classList.toggle('on', e.target.checked); saveSettings(); ensureAudio(); });
   $('#formatTarget').addEventListener('change', e => { settings.formatTarget = e.target.value; saveSettings(); renderHistory(); });
+
+  // Schalter "Zur Sammlung" (gleiche Einstellung wie in den Einstellungen)
+  syncCollectToggle();
+  $('#collectToggle').addEventListener('change', e => {
+    settings.addToCollection = e.target.checked; saveSettings(); syncCollectToggle();
+  });
 
   // Filter der letzten Scans
   $('#histCat').value = settings.histCat;

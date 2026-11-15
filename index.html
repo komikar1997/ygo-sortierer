@@ -17,7 +17,7 @@
     document.documentElement.dataset.theme = t;
   })();
 </script>
-<link rel="stylesheet" href="style.css?v=6">
+<link rel="stylesheet" href="style.css?v=7">
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
@@ -53,9 +53,12 @@
     <select id="cameraSelect" title="Kamera wählen" hidden></select>
     <button id="btnEditRegions" title="Lesebereiche und Rahmengröße anpassen">✎ Bereiche</button>
     <div class="format-scan" id="formatScanBox">
-      <label class="chk"><input type="checkbox" id="formatScan"> 🎯 Format-Suche</label>
+      <label class="chk"><input type="checkbox" id="formatScan"> 🎯 <span class="lbl-long">Format-Suche</span><span class="lbl-short">Format</span></label>
       <select id="formatTarget" title="Gesuchtes Format"></select>
     </div>
+    <label class="collect-toggle" id="collectBox" title="Erkannte Karten automatisch in die Sammlung übernehmen">
+      <input type="checkbox" id="collectToggle"> 📚 <span class="lbl-long">Zur Sammlung</span><span class="lbl-short">Sammeln</span>
+    </label>
   </div>
 
   <div class="scan-layout">
@@ -217,7 +220,7 @@
     <label class="chk"><input type="checkbox" data-set="sound"> Ton abspielen</label>
     <label class="chk"><input type="checkbox" data-set="speech"> Stapelnamen ansagen (Sprachausgabe)</label>
     <label class="chk"><input type="checkbox" data-set="vibrate"> Vibrieren (Handy)</label>
-    <label class="chk"><input type="checkbox" data-set="addToCollection"> Erkannte Karten zur Sammlung hinzufügen</label>
+    <label class="chk"><input type="checkbox" data-set="addToCollection"> Erkannte Karten automatisch zur Sammlung hinzufügen (auch über „📚 Zur Sammlung“ beim Scannen umschaltbar)</label>
     <label class="chk"><input type="checkbox" data-set="ignoreUnmatched"> Karten ohne passende Regel ignorieren</label>
     <label>Stapel für Karten ohne passende Regel <input type="text" data-set="defaultPile"></label>
 
@@ -227,6 +230,6 @@
 </section>
 </main>
 
-<script src="app.js?v=6"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

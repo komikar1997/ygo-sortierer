@@ -83,6 +83,11 @@ label.chk { cursor: pointer; }
 .format-scan select { padding: 4px 8px; }
 .format-scan:not(.on) select { opacity: .55; }
 .format-scan.on { border-color: var(--ok); background: var(--ok-soft); }
+.lbl-short { display: none; }
+.collect-toggle { cursor: pointer; padding: 6px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); white-space: nowrap; color: var(--muted); }
+.collect-toggle.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.result .actions .in-coll { border-color: var(--accent); color: var(--accent-text); }
+.result .actions .add-coll { border-color: var(--accent); background: var(--accent); color: #fff; font-weight: 600; }
 .scan-layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(300px, 1fr); gap: 16px; align-items: start; }
 .camera-wrap { position: relative; background: var(--cam-bg); border-radius: 18px; overflow: hidden; min-height: 220px; box-shadow: var(--shadow);
   display: flex; justify-content: center; align-items: center; transition: box-shadow .2s; color: #dbe6f7; }
@@ -244,7 +249,10 @@ nav button .ico { font-size: 1em; }
   .scan-bar button, .scan-bar select { padding: 6px 9px; font-size: .95em; }
   #btnCamera { flex: 1 1 auto; justify-content: center; }
   #scanMode { flex: 1 1 35%; min-width: 0; }
-  .format-scan { flex: 1 1 100%; justify-content: space-between; }
+  .format-scan { flex: 1 1 60%; justify-content: space-between; min-width: 0; }
+  .collect-toggle { flex: none; padding: 6px 9px; }
+  .lbl-long { display: none; }
+  .lbl-short { display: inline; }
   .format-scan select { flex: 1; max-width: 60%; }
   .camera-wrap { min-height: 150px; border-radius: 14px; }
   .video-box video { max-height: 46vh; }
