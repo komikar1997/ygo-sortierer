@@ -19,6 +19,22 @@ const LS = {
   get(k, d) { try { const v = localStorage.getItem('ygo.' + k); return v ? JSON.parse(v) : d; } catch { return d; } },
   set(k, v) { localStorage.setItem('ygo.' + k, JSON.stringify(v)); },
 };
+// Häufig geänderte Daten (Sammlung, Verlauf, Gelerntes) gebündelt speichern statt bei jedem Scan sofort.
+// Beim Verlassen/Ausblenden der Seite wird sofort geschrieben, damit nichts verloren geht.
+const pendingSaves = new Map();
+let saveTimer = 0;
+function queueSave(key, getValue) {
+  pendingSaves.set(key, getValue);
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flushSaves, 500);
+}
+function flushSaves() {
+  clearTimeout(saveTimer);
+  for (const [k, get] of pendingSaves) { try { LS.set(k, get()); } catch (e) { console.warn('Speichern fehlgeschlagen', k, e); } }
+  pendingSaves.clear();
+}
+addEventListener('pagehide', flushSaves);
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushSaves(); });
 let idbPromise;
 function idb() {
   idbPromise ??= new Promise((res, rej) => {
@@ -55,7 +71,7 @@ const saveSettings = () => LS.set('settings', settings);
 //  +1 bei 👍, +2 bei Korrektur auf die richtige Karte, +0.5 wenn ohne Einspruch weitergescannt wurde.
 //  "neg" merkt sich falsche Zuordnungen (👎), die dann abgestraft werden.
 let memory = { alias: {}, neg: {}, stats: { ok: 0, wrong: 0, auto: 0, fast: 0 }, ...LS.get('memory', {}) };
-const saveMemory = () => LS.set('memory', memory);
+const saveMemory = () => queueSave('memory', () => memory);
 const LEARN_FAST = 2; // ab diesem Gewicht wird ohne Zusatzprüfung sofort erkannt
 function learn(key, id, w) {
   if (!key || key.length < 3 || !id) return;
@@ -308,7 +324,7 @@ let rules = LS.get('rules', null) || PRESETS.kategorie.rules.map(hydrateRule);
 const saveRules = () => LS.set('rules', rules);
 
 /* ------------------------------------------------------- Kartendatenbank */
-let CARDS = [], byId = new Map(), codeIndex = new Map(), nameIndex = [];
+let CARDS = [], byId = new Map(), codeIndex = new Map(), nameIndex = [], nameByLen = [];
 let dbReady = false;
 
 function setDbStatus(t) { $('#dbStatus').textContent = t; }
@@ -342,10 +358,16 @@ function buildIndex(cards) {
   for (const c of cards) for (const a of c.alt || []) if (!byId.has(a)) byId.set(a, c);
   codeIndex = new Map();
   nameIndex = [];
+  nameByLen = [];
+  const addName = (name, c, lang) => {
+    const loose = normLoose(name), e = { norm: normName(name), loose, hist: charHist(loose), card: c, lang, idx: nameIndex.length };
+    nameIndex.push(e);
+    (nameByLen[loose.length] ||= []).push(e);
+  };
   for (const c of cards) {
     const same = !c.nd || normName(c.nd) === normName(c.n);
-    nameIndex.push({ norm: normName(c.n), loose: normLoose(c.n), card: c, lang: same ? '' : 'Englisch' });
-    if (!same) nameIndex.push({ norm: normName(c.nd), loose: normLoose(c.nd), card: c, lang: 'Deutsch' });
+    addName(c.n, c, same ? '' : 'Englisch');
+    if (!same) addName(c.nd, c, 'Deutsch');
     for (const [code, setName, rarity] of c.s) {
       const k = normCode(code);
       if (!k) continue;
@@ -389,24 +411,41 @@ async function loadDb(force = false) {
 }
 
 /* ------------------------------------------------------- Suche / Matching */
+// Levenshtein-Distanz mit Abbruch, sobald sie "max" sicher übersteigt. Puffer werden wiederverwendet.
+let levA = new Uint16Array(128), levB = new Uint16Array(128);
 function lev(a, b, max) {
   const la = a.length, lb = b.length;
-  let prev = new Array(lb + 1), cur = new Array(lb + 1);
+  if (lb + 1 > levA.length) { levA = new Uint16Array(lb * 2); levB = new Uint16Array(lb * 2); }
+  let prev = levA, cur = levB;
   for (let j = 0; j <= lb; j++) prev[j] = j;
   for (let i = 1; i <= la; i++) {
     cur[0] = i;
     let rowMin = i;
     const ca = a.charCodeAt(i - 1);
     for (let j = 1; j <= lb; j++) {
-      const cost = ca === b.charCodeAt(j - 1) ? 0 : 1;
-      const v = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      const del = prev[j] + 1, ins = cur[j - 1] + 1, sub = prev[j - 1] + (ca === b.charCodeAt(j - 1) ? 0 : 1);
+      const v = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
       cur[j] = v;
       if (v < rowMin) rowMin = v;
     }
     if (rowMin > max) return max + 1;
-    [prev, cur] = [cur, prev];
+    const t = prev; prev = cur; cur = t;
   }
   return prev[lb];
+}
+// Buchstaben-Häufigkeiten (a–z, 0–9): daraus folgt eine billige Untergrenze für die Distanz
+function charHist(s) {
+  const h = new Uint8Array(36);
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 97 && c <= 122) h[c - 97]++; else if (c >= 48 && c <= 57) h[c - 22]++;
+  }
+  return h;
+}
+function histBound(a, b) {
+  let d = 0;
+  for (let i = 0; i < 36; i++) d += a[i] > b[i] ? a[i] - b[i] : b[i] - a[i];
+  return (d + 1) >> 1; // jede Änderung verschiebt höchstens 2 Zählerstände
 }
 // Für den Vergleich mit OCR-Text: Umlaute vereinheitlichen (OCR liest "ä" mal als "a", mal als "ä")
 const normLoose = s => normName(s).replace(/ae/g, 'a').replace(/oe/g, 'o').replace(/ue/g, 'u').replace(/ss/g, 's');
@@ -419,17 +458,28 @@ function ocrKey(text) {
 function fuzzyName(text, k = 5) {
   const q = ocrKey(text);
   if (q.length < 3) return [];
-  const scores = new Map();
-  for (const e of nameIndex) {
-    const L = Math.max(q.length, e.loose.length);
-    const maxD = Math.floor(L * 0.45);
-    if (Math.abs(q.length - e.loose.length) > maxD) continue;
-    const d = lev(q, e.loose, maxD);
-    if (d > maxD) continue;
-    const score = 1 - d / L;
-    if (!(scores.get(e.card.id)?.score >= score)) scores.set(e.card.id, { score, lang: e.lang });
+  const scores = new Map(), qh = charHist(q), ql = q.length;
+  // nur Namen passender Länge ansehen; Häufigkeits-Schranke spart die meisten teuren Vergleiche
+  for (let len = 1; len < nameByLen.length; len++) {
+    const bucket = nameByLen[len];
+    if (!bucket) continue;
+    const L = Math.max(ql, len), maxD = Math.floor(L * 0.45);
+    if (Math.abs(ql - len) > maxD) continue;
+    for (const e of bucket) {
+      if (histBound(qh, e.hist) > maxD) continue;
+      const d = lev(q, e.loose, maxD);
+      if (d > maxD) continue;
+      const score = 1 - d / L, prev = scores.get(e.card.id);
+      if (!prev) scores.set(e.card.id, { score, lang: e.lang, first: e.idx, at: e.idx });
+      else {
+        prev.first = Math.min(prev.first, e.idx);
+        // bessere Übereinstimmung gewinnt; bei Gleichstand der Name, der in der Datenbank zuerst kommt
+        if (score > prev.score || (score === prev.score && e.idx < prev.at)) { prev.score = score; prev.lang = e.lang; prev.at = e.idx; }
+      }
+    }
   }
-  return [...scores].sort((a, b) => b[1].score - a[1].score).slice(0, k)
+  // bei Gleichstand feste Reihenfolge (Position in der Datenbank)
+  return [...scores].sort((a, b) => b[1].score - a[1].score || a[1].first - b[1].first).slice(0, k)
     .map(([id, { score, lang }]) => ({ card: byId.get(id), score, lang }));
 }
 function searchCards(text, k = 10) {
@@ -529,7 +579,7 @@ function getWorker(kind) {
       const langs = kind === 'name' ? 'deu+eng' : 'eng';
       const w = await Tesseract.createWorker(langs, 1);
       const params = { tessedit_pageseg_mode: '7' }; // eine Textzeile
-      if (kind === 'code') params.tessedit_char_whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-';
+      if (kind.startsWith('code')) params.tessedit_char_whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-';
       if (kind === 'atk') params.tessedit_char_whitelist = 'ATKDEFLIN/0123456789?-';
       await w.setParameters(params);
       return w;
@@ -649,23 +699,23 @@ function countStars(card, gains = [1, 1, 1]) {
   const c = document.createElement('canvas'); c.width = W; c.height = H;
   const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(card, r.x * card.width, r.y * card.height, r.w * card.width, r.h * card.height, 0, 0, W, H);
-  const d = ctx.getImageData(0, 0, W, H).data;
-  const px = [];
+  const d = ctx.getImageData(0, 0, W, H).data, n = W * H;
+  const hue = new Float32Array(n), sat = new Float32Array(n), val = new Float32Array(n);
   const bins = new Uint32Array(60);
-  for (let i = 0; i < d.length; i += 4) {
+  for (let i = 0, j = 0; j < n; i += 4, j++) {
     const p = rgb2hsv(Math.min(255, d[i] * gains[0]), Math.min(255, d[i + 1] * gains[1]), Math.min(255, d[i + 2] * gains[2]));
-    px.push(p);
+    hue[j] = p.h; sat[j] = p.s; val[j] = p.v;
     if (p.s > 0.45 && p.v > 0.35) bins[Math.floor(p.h / 6) % 60]++;
   }
   // Rahmenfarbe der Zeile (häufigster Farbton). Ist sie selbst rötlich-orange (Effektmonster),
   // müssen Sterne deutlich röter sein als der Rahmen.
-  const top = Math.max(...bins), frameHue = bins.indexOf(top) * 6 + 3;
-  const frameDominates = top > px.length * 0.3;
+  let top = 0, topBin = 0;
+  for (let b = 0; b < 60; b++) if (bins[b] > top) { top = bins[b]; topBin = b; }
+  const frameHue = topBin * 6 + 3, frameDominates = top > n * 0.3;
   const redMax = frameDominates && frameHue >= 14 && frameHue < 32 ? Math.min(14, frameHue - 7) : 14;
   const col = new Float32Array(W);
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    const p = px[y * W + x];
-    if ((p.h < redMax || p.h > 340) && p.s > 0.5 && p.v > 0.35) col[x]++;
+  for (let j = 0; j < n; j++) {
+    if ((hue[j] < redMax || hue[j] > 340) && sat[j] > 0.5 && val[j] > 0.35) col[j % W]++;
   }
   const starW = (0.052 / r.w) * W; // Breite eines Sterns in Pixeln dieses Ausschnitts
   let count = 0, run = 0, gap = 0;
@@ -719,57 +769,59 @@ function guessLang(card, key) {
   if (!card.nd || normLoose(card.nd) === normLoose(card.n)) return '';
   return lev(normLoose(card.nd), key, 99) <= lev(normLoose(card.n), key, 99) ? 'Deutsch' : 'Englisch';
 }
-async function recognizeCard(card, mode) {
-  const out = { codeText: '', nameText: '', atkText: '', match: null, candidates: [], crops: [], cues: {} };
-  const fr = analyzeCard(card);
-  out.frame = fr;
-  out.cues.frame = fr.cls;
-  // 1) Keine Karte im Rahmen -> gar nicht erst lesen (verhindert Fehlerkennungen)
-  if (settings.checkFrame && !fr.present) { out.noCard = true; return out; }
+// Passt die Rahmenfarbe zur Karte? (gleich oder bei Kunstlicht verwechselbar)
+function frameFits(card, cls) {
+  const exp = expectedFrame(card);
+  return !cls || !exp || exp === cls || (FRAME_NEAR[exp] || []).includes(cls);
+}
 
-  // 2) Set-Code (eindeutig)
-  if (mode !== 'name') {
-    const w = await getWorker('code');
-    search: for (const key of ['code', 'codePend']) {
-      for (const strip of codeStrips(REGIONS[key])) {
-        const rc = regionCanvas(card, strip, 56);
-        out.crops.push(rc);
-        const { data } = await w.recognize(rc);
-        const txt = data.text.trim();
-        if (txt) out.codeText += (out.codeText ? ' | ' : '') + txt;
-        const hit = findByCode(data.text);
-        if (!hit) continue;
-        // Gegenprobe Rahmenfarbe: ein "Code" auf einer Karte mit ganz anderer Farbe ist ein Lesefehler
-        const exp = expectedFrame(hit.card);
-        if (settings.checkFrame && fr.cls && exp && exp !== fr.cls && !(FRAME_NEAR[exp] || []).includes(fr.cls)) {
-          out.codeRejected = `${hit.set.code} passt nicht zur Rahmenfarbe`;
-          continue;
-        }
-        out.match = { ...hit, via: 'Set-Code', score: 1 };
-        break search;
-      }
+// Set-Code lesen: rechter und Pendel-Bereich laufen gleichzeitig auf zwei Lesern.
+// Sobald einer einen gültigen Code findet, hört der andere auf.
+async function readCode(card, fr, out) {
+  const state = { found: false };
+  const scan = async (key, workerKind) => {
+    const w = await getWorker(workerKind);
+    for (const strip of codeStrips(REGIONS[key])) {
+      if (state.found) return null;
+      const rc = regionCanvas(card, strip, 56);
+      out.crops.push(rc);
+      const { data } = await w.recognize(rc);
+      const txt = data.text.trim();
+      if (txt) out.codeText += (out.codeText ? ' | ' : '') + txt;
+      const hit = findByCode(data.text);
+      if (!hit) continue;
+      // Gegenprobe Rahmenfarbe: ein "Code" auf einer Karte mit ganz anderer Farbe ist ein Lesefehler
+      if (settings.checkFrame && !frameFits(hit.card, fr.cls)) { out.codeRejected = `${hit.set.code} passt nicht zur Rahmenfarbe`; continue; }
+      state.found = true;
+      return hit;
     }
-  }
-  if (out.match || mode === 'code') return out;
+    return null;
+  };
+  const [main, pend] = await Promise.all([scan('code', 'code'), scan('codePend', 'code2')]);
+  return main || pend;
+}
 
-  // 3) Name + Zusatzmerkmale
-  const w = await getWorker('name');
+// Name lesen + Zusatzmerkmale. ATK/DEF wird parallel zum Namen gelesen (eigener Leser).
+async function readName(card, fr, out) {
+  const atkJob = settings.useAtk ? (async () => {
+    const arc = regionCanvas(card, REGIONS.atk, 56);
+    const res = await (await getWorker('atk')).recognize(arc);
+    return { arc, text: res.data.text.trim() };
+  })() : null;
   const rc = regionCanvas(card, REGIONS.name, 64);
   out.crops.push(rc);
-  const { data } = await w.recognize(rc);
+  const { data } = await (await getWorker('name')).recognize(rc);
   out.nameText = data.text.trim();
   out.key = ocrKey(out.nameText);
   const learned = learnedFor(out.key), neg = memory.neg[out.key] || {};
 
-  // Schnellweg: diesen Text haben wir schon öfter bestätigt -> sofort erkennen (spart ATK/Sterne-Prüfung)
+  // Schnellweg: diesen Text haben wir schon öfter bestätigt -> sofort erkennen (ohne auf ATK/Sterne zu warten)
   const top = Object.entries(learned).sort((a, b) => b[1] - a[1])[0];
   if (top && top[1] >= LEARN_FAST) {
-    const lc = byId.get(+top[0]), exp = lc && expectedFrame(lc);
-    const frameOk = !fr.cls || !exp || exp === fr.cls || (FRAME_NEAR[exp] || []).includes(fr.cls);
-    if (lc && frameOk) {
+    const lc = byId.get(+top[0]);
+    if (lc && frameFits(lc, fr.cls)) {
       memory.stats.fast++;
-      out.match = { card: lc, set: langOnly(guessLang(lc, out.key)), via: 'Gelernt', score: 1 };
-      return out;
+      return { card: lc, set: langOnly(guessLang(lc, out.key)), via: 'Gelernt', score: 1 };
     }
   }
 
@@ -779,13 +831,12 @@ async function recognizeCard(card, mode) {
     const c = byId.get(+id);
     if (c && !cands.some(x => x.card === c)) cands.push({ card: c, score: 0.7, lang: guessLang(c, out.key) });
   }
-  if (!cands.length) return out;
-  if (settings.useAtk && cands.some(c => isMonster(c.card))) {
-    const arc = regionCanvas(card, REGIONS.atk, 56);
+  if (!cands.length) return null;
+  if (atkJob && cands.some(c => isMonster(c.card))) {
+    const { arc, text } = await atkJob;
     out.crops.push(arc);
-    const res = await (await getWorker('atk')).recognize(arc);
-    out.atkText = res.data.text.trim();
-    Object.assign(out.cues, parseAtkDef(out.atkText));
+    out.atkText = text;
+    Object.assign(out.cues, parseAtkDef(text));
   }
   if (settings.useStars) out.cues.stars = countStars(card, fr.gains);
   cands = cands.map(c => {
@@ -795,12 +846,26 @@ async function recognizeCard(card, mode) {
     return v;
   }).sort((a, b) => b.final - a.final);
   out.candidates = cands;
-  const best = cands[0], qlen = normLoose(out.nameText).length;
+  const best = cands[0];
   // kurze gelesene Texte sind unsicher -> strengere Schwelle
-  const need = qlen < 7 ? Math.max(0.9, settings.minScore) : settings.minScore;
-  if (best.final >= need && best.score >= 0.6) {
-    out.match = { card: best.card, set: langOnly(best.lang), via: 'Name', score: Math.min(1, best.final) };
-  }
+  const need = out.key.length < 7 ? Math.max(0.9, settings.minScore) : settings.minScore;
+  return best.final >= need && best.score >= 0.6
+    ? { card: best.card, set: langOnly(best.lang), via: 'Name', score: Math.min(1, best.final) } : null;
+}
+
+async function recognizeCard(card, mode) {
+  const out = { codeText: '', nameText: '', atkText: '', key: '', match: null, candidates: [], crops: [], cues: {} };
+  const fr = analyzeCard(card);
+  out.frame = fr;
+  out.cues.frame = fr.cls;
+  // Keine Karte im Rahmen -> gar nicht erst lesen (verhindert Fehlerkennungen, spart Akku)
+  if (settings.checkFrame && !fr.present) { out.noCard = true; return out; }
+  // Set-Code und Name gleichzeitig lesen; der eindeutige Set-Code hat Vorrang
+  const [codeHit, nameHit] = await Promise.all([
+    mode !== 'name' ? readCode(card, fr, out) : null,
+    mode !== 'code' ? readName(card, fr, out) : null,
+  ]);
+  out.match = codeHit ? { ...codeHit, via: 'Set-Code', score: 1 } : nameHit;
   return out;
 }
 
@@ -970,6 +1035,22 @@ function initRegionEditor() {
 /* ------------------------------------------------------- Live-Scan */
 let live = false, liveBusy = false, liveRun = 0, pendingId = null, pendingCount = 0, lastAcceptedId = null, missCount = 0;
 
+// Mini-Fingerabdruck des Bildes (16×24 Graustufen): erkennt, ob sich im Rahmen etwas verändert hat
+const sigCanvas = Object.assign(document.createElement('canvas'), { width: 16, height: 24 });
+const sigCtx = sigCanvas.getContext('2d', { willReadFrequently: true });
+let lastSig = null, lastSigState = '';
+function frameSig(card) {
+  sigCtx.drawImage(card, 0, 0, 16, 24);
+  const d = sigCtx.getImageData(0, 0, 16, 24).data, s = new Uint8Array(16 * 24);
+  for (let i = 0, j = 0; i < d.length; i += 4, j++) s[j] = (d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8;
+  return s;
+}
+function sigDiff(a, b) {
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
+  return sum / a.length;
+}
+
 function setLive(on) {
   live = on;
   liveRun++; // alte Schleifen beenden sich selbst
@@ -979,7 +1060,7 @@ function setLive(on) {
   const ind = $('#liveIndicator');
   ind.hidden = !stream;
   ind.classList.toggle('paused', !on);
-  if (on) { ensureAudio(); pendingId = null; lastAcceptedId = null; missCount = 0; liveStatus('suche Karte…'); liveLoop(liveRun); }
+  if (on) { ensureAudio(); pendingId = null; lastAcceptedId = null; missCount = 0; lastSig = null; lastSigState = ''; liveStatus('suche Karte…'); liveLoop(liveRun); }
   else ind.textContent = 'PAUSE';
 }
 const liveStatus = t => { $('#liveIndicator').textContent = 'LIVE · ' + t; };
@@ -990,42 +1071,57 @@ async function liveLoop(run) {
     liveBusy = true;
     try {
       const card = grabFrame();
-      const r = await recognizeCard(card, settings.scanMode);
-      if (run === liveRun) {
-        renderDebug(r);
-        const m = r.match;
-        $('#guide').classList.toggle('hit', !!m);
-        if (!m) {
-          if (++missCount >= 2) { lastAcceptedId = null; pendingId = null; }
-          liveStatus(r.noCard ? 'keine Karte im Rahmen' : 'suche Karte…');
-        } else {
-          missCount = 0;
-          const id = m.card.id;
-          if (id === lastAcceptedId) {
-            liveStatus('✓ erfasst – nächste Karte');
-          } else {
-            pendingCount = pendingId === id ? pendingCount + 1 : 1;
-            pendingId = id;
-            // gelernte Karten brauchen keine zweite Bestätigung -> schneller
-            if (pendingCount >= settings.confirmations || m.via === 'Gelernt') {
-              lastAcceptedId = id; pendingId = null;
-              accept(m.card, m.set, { via: m.via, score: m.score, thumb: card, key: r.key, nameText: r.nameText });
-              liveStatus('✓ erfasst – nächste Karte');
-            } else liveStatus('prüfe…');
-          }
-        }
+      const sig = frameSig(card);
+      // Bild unverändert und Ergebnis schon bekannt (Karte erfasst / keine Karte)? -> nicht erneut lesen.
+      // Spätestens jedes 6. Mal wird trotzdem geprüft.
+      const still = lastSig && sigDiff(sig, lastSig) < 3.5;
+      if (still && (lastSigState === 'captured' || lastSigState === 'nocard') && skipCount < 5) {
+        skipCount++;
+      } else {
+        skipCount = 0;
+        lastSig = sig;
+        await processFrame(card, run);
       }
     } catch (e) { console.error(e); }
     liveBusy = false;
   }
   setTimeout(() => liveLoop(run), settings.interval);
 }
+let skipCount = 0;
+async function processFrame(card, run) {
+  const r = await recognizeCard(card, settings.scanMode);
+  if (run !== liveRun) return;
+  renderDebug(r);
+  const m = r.match;
+  $('#guide').classList.toggle('hit', !!m);
+  lastSigState = r.noCard ? 'nocard' : 'other';
+  if (!m) {
+    if (++missCount >= 2) { lastAcceptedId = null; pendingId = null; }
+    liveStatus(r.noCard ? 'keine Karte im Rahmen' : 'suche Karte…');
+    return;
+  }
+  missCount = 0;
+  const id = m.card.id;
+  if (id === lastAcceptedId) {
+    lastSigState = 'captured';
+    liveStatus('✓ erfasst – nächste Karte');
+    return;
+  }
+  pendingCount = pendingId === id ? pendingCount + 1 : 1;
+  pendingId = id;
+  // gelernte Karten brauchen keine zweite Bestätigung -> schneller
+  if (pendingCount >= settings.confirmations || m.via === 'Gelernt') {
+    lastAcceptedId = id; pendingId = null; lastSigState = 'captured';
+    accept(m.card, m.set, { via: m.via, score: m.score, thumb: card, key: r.key, nameText: r.nameText });
+    liveStatus('✓ erfasst – nächste Karte');
+  } else liveStatus('prüfe…');
+}
 
 /* ------------------------------------------------------- Sammlung */
 let collection = LS.get('collection', {}); // key -> {id, code, setName, rarity, lang, count, pile, color, first, last}
 let history = LS.get('history', []); // letzte Scans (bleiben nach Neuladen erhalten)
-const saveHistory = () => LS.set('history', history.slice(0, 200));
-const saveCollection = () => LS.set('collection', collection);
+const saveHistory = () => queueSave('history', () => history.slice(0, 200));
+const saveCollection = () => queueSave('collection', () => collection);
 const collKey = (id, code, lang) => id + '|' + (code || '') + '|' + (lang || '');
 
 function addToCollection(e, n = 1) {
@@ -1124,13 +1220,17 @@ function formatFlash(hit) {
   clearTimeout(flashTimer);
   flashTimer = setTimeout(() => { badge.hidden = true; wrap.classList.remove('flash-hit', 'flash-miss'); }, 2500);
 }
+// Vibration nur, wenn erlaubt (Einstellung) und der Browser es zulässt (erst nach einer Berührung der Seite)
+function vibrate(pattern) {
+  if (settings.vibrate && navigator.vibrate && navigator.userActivation?.hasBeenActive !== false) navigator.vibrate(pattern);
+}
 function feedback(entry, rule) {
   // Format-Suche aktiv: Treffer = grün + positiver Ton, sonst nur kurzer leiser Ton
   if (entry.formatHit !== null && entry.formatHit !== undefined) {
     formatFlash(entry.formatHit);
     if (entry.formatHit) {
       if (settings.sound) chime();
-      if (settings.vibrate && navigator.vibrate) navigator.vibrate([90, 60, 90]);
+      vibrate([90, 60, 90]);
       if (settings.speech && 'speechSynthesis' in window) {
         speechSynthesis.cancel();
         const u = new SpeechSynthesisUtterance(entry.formats.find(f => settings.formatTarget === '*' || f === settings.formatTarget) || 'Treffer');
@@ -1140,7 +1240,7 @@ function feedback(entry, rule) {
     } else {
       // passt nicht: rotes Aufleuchten + absteigender "Nein"-Ton
       if (settings.sound) { beep(420, 0.16, 0, 'triangle', 0.28); beep(260, 0.3, 0.17, 'triangle', 0.28); }
-      if (settings.vibrate && navigator.vibrate) navigator.vibrate(260);
+      vibrate(260);
     }
     return;
   }
@@ -1149,7 +1249,7 @@ function feedback(entry, rule) {
     if (alarm) { for (let i = 0; i < 4; i++) beep(1200, 0.12, i * 0.18, 'square', 0.2); }
     else beep(hashFreq(entry.pile), 0.15);
   }
-  if (settings.vibrate && navigator.vibrate && entry.pile !== null) navigator.vibrate(alarm ? [200, 100, 200, 100, 200] : 70);
+  if (entry.pile !== null) vibrate(alarm ? [200, 100, 200, 100, 200] : 70);
   if (settings.speech && entry.pile !== null && 'speechSynthesis' in window && (!rule || rule.sound !== false)) {
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(entry.pile);
@@ -1417,7 +1517,7 @@ function buildDatalists() {
 const SORT_KEYS = { '': '–', stapel: 'Stapel', ...Object.fromEntries(Object.entries(FIELDS).map(([k, f]) => [k, f.label])), setcode: 'Set-Code', anzahl: 'Anzahl', zuletzt: 'Zuletzt gescannt' };
 
 // Alle möglichen Tabellenspalten. val = Text (auch für CSV), html = optionale Darstellung
-const fieldCol = (key, label) => ({ key, label, num: FIELDS[key].num, val: (e, c) => showField(key, c, entrySet(e)) });
+const fieldCol = (key, label) => ({ key, label, num: FIELDS[key].num, val: (e, c, s = entrySet(e)) => showField(key, c, s) });
 const COLUMNS = [
   { key: 'anzahl', label: 'Anz.', val: e => e.count,
     html: e => `<span class="cnt"><button class="small" data-d="-1">−</button><b>${e.count}</b><button class="small" data-d="1">＋</button></span>` },
@@ -1462,52 +1562,79 @@ if (!collView.linkCol) { if (!collView.cols.includes('link')) collView.cols.push
 const saveCollView = () => LS.set('collView', collView);
 const visibleCols = () => collView.cols.map(k => COL_BY_KEY[k]).filter(Boolean);
 
-function sortValue(e, key) {
-  const c = byId.get(e.id);
+// Zeile = { k: Schlüssel, e: Eintrag, c: Karte, s: Druck } – Karte und Druck nur einmal pro Zeile ermitteln
+function sortValue(row, key) {
+  const { e, c, s } = row;
   if (key === 'stapel') return e.pile || '';
   if (key === 'setcode') return e.code || '';
   if (key === 'anzahl') return e.count;
   if (key === 'zuletzt') return e.last || 0;
-  return FIELDS[key] ? FIELDS[key].get(c, entrySet(e)) : '';
+  return FIELDS[key] ? FIELDS[key].get(c, s) : '';
 }
+const collator = new Intl.Collator('de', { numeric: true });
 function cmp(a, b) {
   if (typeof a === 'number' && typeof b === 'number') return a - b;
   if (a === '' && b !== '') return 1;
   if (b === '' && a !== '') return -1;
-  return String(a).localeCompare(String(b), 'de', { numeric: true });
+  return collator.compare(String(a), String(b));
 }
 function sortedEntries() {
-  let entries = Object.entries(collection).filter(([, e]) => byId.has(e.id));
+  let rows = [];
+  for (const [k, e] of Object.entries(collection)) { const c = byId.get(e.id); if (c) rows.push({ k, e, c, s: entrySet(e) }); }
   const q = normName(collView.q || '');
-  if (q) entries = entries.filter(([, e]) => { const c = byId.get(e.id); return normName(c.n).includes(q) || normName(c.nd).includes(q) || normName(e.code).includes(q) || normName(e.pile || '').includes(q); });
+  if (q) rows = rows.filter(({ e, c }) => normName(c.n).includes(q) || normName(c.nd).includes(q) || normName(e.code).includes(q) || normName(e.pile || '').includes(q));
   const sorts = collView.sort.filter(([k]) => k);
-  entries.sort(([, a], [, b]) => { for (const [k, dir] of sorts) { const r = cmp(sortValue(a, k), sortValue(b, k)); if (r) return r * dir; } return 0; });
-  return entries;
+  // Sortierwerte einmal berechnen statt bei jedem Vergleich neu
+  for (const r of rows) r.keys = sorts.map(([key]) => sortValue(r, key));
+  rows.sort((a, b) => { for (let i = 0; i < sorts.length; i++) { const r = cmp(a.keys[i], b.keys[i]); if (r) return r * sorts[i][1]; } return 0; });
+  return rows;
 }
+// Gezeichnet wird nur, wenn der Tab sichtbar ist – sonst nur vormerken (spart beim Scannen viel Zeit)
+let collDirty = true, collFrame = 0, collLimit = 300;
 function renderCollection() {
+  collDirty = true;
+  if (!$('#tab-collection').classList.contains('active') || collFrame) return;
+  collFrame = requestAnimationFrame(() => { collFrame = 0; drawCollection(); });
+}
+function drawCollection() {
+  collDirty = false;
   const box = $('#collection');
   if (!dbReady) { box.innerHTML = '<p class="muted">Datenbank lädt…</p>'; return; }
-  const entries = sortedEntries();
-  const total = entries.reduce((s, [, e]) => s + e.count, 0);
-  const value = entries.reduce((s, [, e]) => s + e.count * (byId.get(e.id).p || 0), 0);
-  $('#collSummary').textContent = `${total.toLocaleString('de-DE')} Karten (${entries.length} verschiedene) · geschätzter Wert ${euro(value)}`;
-  if (!entries.length) { box.innerHTML = '<p class="muted">Noch keine Karten in der Sammlung. Scanne welche!</p>'; return; }
+  const rows = sortedEntries();
+  let total = 0, value = 0;
+  for (const { e, c } of rows) { total += e.count; value += e.count * (c.p || 0); }
+  $('#collSummary').textContent = `${total.toLocaleString('de-DE')} Karten (${rows.length} verschiedene) · geschätzter Wert ${euro(value)}`;
+  if (!rows.length) { box.innerHTML = '<p class="muted">Noch keine Karten in der Sammlung. Scanne welche!</p>'; return; }
 
   const cols = visibleCols();
-  const cell = (col, e, c) => `<td${col.num ? ' class="num"' : ''}>${col.html ? col.html(e, c) : esc(col.val(e, c))}</td>`;
-  const row = ([k, e]) => { const c = byId.get(e.id); return `<tr data-k="${esc(k)}">${cols.map(col => cell(col, e, c)).join('')}</tr>`; };
-  const table = list => `<div class="table-wrap"><table><thead><tr>${cols.map(col => `<th${col.num ? ' class="num"' : ''}>${esc(col.label)}</th>`).join('')}</tr></thead><tbody>${list.map(row).join('')}</tbody></table></div>`;
+  const head = `<thead><tr>${cols.map(col => `<th${col.num ? ' class="num"' : ''}>${esc(col.label)}</th>`).join('')}</tr></thead>`;
+  const rowHtml = r => `<tr data-k="${esc(r.k)}">${cols.map(col => `<td${col.num ? ' class="num"' : ''}>${col.html ? col.html(r.e, r.c, r.s) : esc(col.val(r.e, r.c, r.s))}</td>`).join('')}</tr>`;
+  const table = list => `<div class="table-wrap"><table>${head}<tbody>${list.map(rowHtml).join('')}</tbody></table></div>`;
 
-  if (!collView.group) { box.innerHTML = table(entries); return; }
+  // Gruppen bilden (bei "nicht gruppieren" eine einzige Gruppe ohne Überschrift)
   const groups = new Map();
-  for (const pair of entries) {
-    const e = pair[1];
-    const raw = sortValue(e, collView.group);
-    const g = String((FIELDS[collView.group]?.date ? fmtDate(raw) : raw) || '–');
+  for (const r of rows) {
+    let g = '';
+    if (collView.group) { const raw = sortValue(r, collView.group); g = String((FIELDS[collView.group]?.date ? fmtDate(raw) : raw) || '–'); }
     if (!groups.has(g)) groups.set(g, []);
-    groups.get(g).push(pair);
+    groups.get(g).push(r);
   }
-  box.innerHTML = [...groups].map(([g, list]) => `<div class="group-h"><h3>${esc(g)}</h3><span class="muted">${list.reduce((s, [, e]) => s + e.count, 0)} Karten · ${euro(list.reduce((s, [, e]) => s + e.count * (byId.get(e.id).p || 0), 0))}</span></div>${table(list)}`).join('');
+  // Große Sammlungen in Portionen zeichnen – Tausende Tabellenzeilen auf einmal machen das Handy träge
+  let shown = 0, html = '';
+  for (const [g, list] of groups) {
+    if (shown >= collLimit) break;
+    if (collView.group) {
+      let n = 0, v = 0;
+      for (const { e, c } of list) { n += e.count; v += e.count * (c.p || 0); }
+      html += `<div class="group-h"><h3>${esc(g)}</h3><span class="muted">${n} Karten · ${euro(v)}</span></div>`;
+    }
+    const part = list.slice(0, collLimit - shown);
+    html += table(part);
+    shown += part.length;
+  }
+  const rest = rows.length - shown;
+  if (rest > 0) html += `<div class="toolbar" style="margin-top:10px"><button data-more>Weitere ${Math.min(300, rest)} anzeigen</button><span class="muted small">noch ${rest.toLocaleString('de-DE')} ausgeblendet</span></div>`;
+  box.innerHTML = html;
 }
 // Spaltenauswahl: sichtbare Spalten (in Reihenfolge, verschiebbar) + ausgeblendete
 function renderColChooser() {
@@ -1530,7 +1657,7 @@ function initCollectionUi() {
   $('#groupBy').innerHTML = Object.entries(SORT_KEYS).filter(([k]) => !['anzahl', 'zuletzt', 'name', 'atk', 'def', 'preis', 'erstdruckOcg'].includes(k)).map(([k, l]) => `<option value="${k}">${esc(l === '–' ? 'nicht gruppieren' : l)}</option>`).join('');
   $('#groupBy').value = collView.group;
   $('#collSearch').value = collView.q;
-  const save = () => { saveCollView(); renderCollection(); };
+  const save = () => { saveCollView(); collLimit = 300; renderCollection(); };
   $$('.sortKey').forEach(s => s.addEventListener('change', () => { collView.sort[+s.dataset.i][0] = s.value; save(); }));
   $$('.sortDir').forEach(b => b.addEventListener('click', () => { const s = collView.sort[+b.dataset.i]; s[1] *= -1; b.textContent = s[1] > 0 ? '↑' : '↓'; save(); }));
   $('#groupBy').addEventListener('change', e => { collView.group = e.target.value; save(); });
@@ -1554,6 +1681,7 @@ function initCollectionUi() {
   });
 
   $('#collection').addEventListener('click', e => {
+    if (e.target.closest('[data-more]')) { collLimit += 300; drawCollection(); return; }
     const b = e.target.closest('button[data-d]');
     if (!b) return;
     const k = b.closest('tr').dataset.k, ent = collection[k];
@@ -1596,11 +1724,8 @@ function exportCsv() {
   const cols = visibleCols();
   const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const lines = [cols.map(c => q(c.label)).join(';')];
-  for (const [, e] of sortedEntries()) {
-    const c = byId.get(e.id);
-    lines.push(cols.map(col => q((col.csv || col.val)(e, c))).join(';'));
-  }
-  download('ygo-sammlung.csv', '﻿' + lines.join('\r\n'), 'text/csv;charset=utf-8');
+  for (const { e, c, s } of sortedEntries()) lines.push(cols.map(col => q((col.csv || col.val)(e, c, s))).join(';'));
+  download('ygo-sammlung.csv', '\ufeff' + lines.join('\r\n'), 'text/csv;charset=utf-8');
 }
 
 /* ------------------------------------------------------- UI: Spielformate */
@@ -1681,6 +1806,7 @@ function init() {
   $$('nav button').forEach(b => b.addEventListener('click', () => {
     $$('nav button').forEach(x => x.classList.toggle('active', x === b));
     $$('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + b.dataset.tab));
+    if (b.dataset.tab === 'collection' && collDirty) drawCollection();
   }));
 
   // Scannen
@@ -1753,6 +1879,6 @@ function init() {
   renderHistory();
   loadDb();
   // OCR-Engine schon mal vorwärmen
-  if (window.Tesseract) { getWorker('code'); getWorker('name'); getWorker('atk'); }
+  if (window.Tesseract) for (const k of ['code', 'code2', 'name', 'atk']) getWorker(k);
 }
 init();

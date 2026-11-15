@@ -160,7 +160,6 @@ details > summary { cursor: pointer; padding: 4px 0; }
 .manual { margin-bottom: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 6px 12px; }
 .manual[open] { padding-bottom: 10px; }
 .manual input, #ruleTest { width: 100%; }
-#candidates:not(:empty) { margin-bottom: 10px; }
 
 .hist-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 6px 0 8px; }
 .hist-head h3 { margin: 0; font-size: 1.05em; }
